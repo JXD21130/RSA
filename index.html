@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RSA</title>
+<title>RSA Cipher — Terminal</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -107,13 +107,13 @@
   <div class="dot r"></div>
   <div class="dot y"></div>
   <div class="dot g"></div>
-  <span>rsa.py — python3</span>
+  <span>rsa_cipher.py — python3</span>
 </div>
 
 <div id="terminal"></div>
 
 <div id="input-row">
-  <span id="prompt">▶</span>
+  <span id="prompt">&#9658;</span>
   <input id="user-input" type="text" autocomplete="off" autocorrect="off" spellcheck="false" disabled placeholder="Esperando Python...">
   <button id="send-btn" disabled>Enter</button>
 </div>
@@ -143,7 +143,7 @@ function printLine(text, cls) {
 function echoInput(val) {
   var div = document.createElement('div');
   div.className = 'line inp';
-  div.textContent = '▶ ' + val;
+  div.textContent = '> ' + val;
   terminal.appendChild(div);
   terminal.scrollTop = terminal.scrollHeight;
 }
@@ -156,7 +156,6 @@ function waitForInput(prompt) {
   return new Promise(function(resolve) { inputResolve = resolve; });
 }
 
-// Exponemos globalmente para que Python la llame via pyodide.globals
 window._waitForInput = waitForInput;
 
 function submitInput() {
@@ -185,9 +184,12 @@ inputEl.addEventListener('keydown', function(e) {
 });
 sendBtn.addEventListener('click', submitInput);
 
+// Nota: open() para guardar ficheros no funciona en el navegador,
+// se sustituye por mostrar el contenido en pantalla para copiarlo.
 const PYTHON_CODE = `
 import math
 import random
+import base64
 import string as _string
 
 ABECEDARIO = {
@@ -203,6 +205,186 @@ NUMERO_A_LETRA = {v: k for k, v in ABECEDARIO.items()}
 MARCADOR_DIGITO = -1
 OFFSET_DIGITO = 27
 
+
+# ── Primalidad y generacion de primos ──
+
+def es_primo_miller_rabin(n, k=20):
+    if n < 2: return False
+    if n == 2 or n == 3: return True
+    if n % 2 == 0: return False
+    r, d = 0, n - 1
+    while d % 2 == 0:
+        r += 1
+        d //= 2
+    for _ in range(k):
+        a = random.randrange(2, n - 1)
+        x = pow(a, d, n)
+        if x == 1 or x == n - 1:
+            continue
+        for _ in range(r - 1):
+            x = pow(x, 2, n)
+            if x == n - 1:
+                break
+        else:
+            return False
+    return True
+
+
+def primo_aleatorio(bits):
+    while True:
+        n = random.getrandbits(bits)
+        n |= (1 << (bits - 1))
+        n |= 1
+        if es_primo_miller_rabin(n):
+            return n
+
+
+def cifras_a_bits(cifras):
+    return math.ceil(cifras * math.log2(10))
+
+
+# ── Codificacion DER / PEM ──
+
+def encode_der_integer(n):
+    length = max(1, (n.bit_length() + 7) // 8)
+    raw = n.to_bytes(length, byteorder='big')
+    if raw[0] & 0x80:
+        raw = b'\\x00' + raw
+    return encode_der_tlv(0x02, raw)
+
+
+def encode_der_tlv(tag, value):
+    length = len(value)
+    if length < 0x80:
+        len_bytes = bytes([length])
+    elif length < 0x100:
+        len_bytes = bytes([0x81, length])
+    elif length < 0x10000:
+        len_bytes = bytes([0x82, length >> 8, length & 0xFF])
+    else:
+        raise ValueError("Longitud demasiado grande")
+    return bytes([tag]) + len_bytes + value
+
+
+def generar_clave_publica_pem(n, e):
+    seq = encode_der_integer(n) + encode_der_integer(e)
+    der = encode_der_tlv(0x30, seq)
+    b64 = base64.encodebytes(der).decode('ascii')
+    return (
+        "-----BEGIN RSA PUBLIC KEY-----\\n"
+        + b64
+        + "-----END RSA PUBLIC KEY-----"
+    )
+
+
+def generar_clave_privada_pem(n, e, d, p, q):
+    dp = d % (p - 1)
+    dq = d % (q - 1)
+    qInv = pow(q, -1, p)
+    seq = (
+        encode_der_integer(0)
+        + encode_der_integer(n)
+        + encode_der_integer(e)
+        + encode_der_integer(d)
+        + encode_der_integer(p)
+        + encode_der_integer(q)
+        + encode_der_integer(dp)
+        + encode_der_integer(dq)
+        + encode_der_integer(qInv)
+    )
+    der = encode_der_tlv(0x30, seq)
+    b64 = base64.encodebytes(der).decode('ascii')
+    return (
+        "-----BEGIN RSA PRIVATE KEY-----\\n"
+        + b64
+        + "-----END RSA PRIVATE KEY-----"
+    )
+
+
+# ── Generacion de claves (async) ──
+
+async def generar_claves_rsa():
+    print()
+    print("Generador de claves RSA")
+    print("-" * 40)
+    print("Pulsa ENTER en cualquier campo para usar un tamano aleatorio.")
+    print()
+
+    entrada_n = (await _input("Cuantas cifras quieres que tenga n? (ENTER = aleatorio): ")).strip()
+    if entrada_n == "":
+        cifras_n = random.randint(4, 20)
+        print(f"  -> Cifras de n elegidas aleatoriamente: {cifras_n}")
+    else:
+        cifras_n = int(entrada_n)
+
+    bits_n = cifras_a_bits(cifras_n)
+    bits_primo = max(bits_n // 2, 8)
+
+    print(f"\\nGenerando primos p y q (~{bits_primo} bits cada uno)...")
+
+    p = primo_aleatorio(bits_primo)
+    q = primo_aleatorio(bits_primo)
+    while q == p:
+        q = primo_aleatorio(bits_primo)
+
+    n = p * q
+    phi = (p - 1) * (q - 1)
+
+    print(f"  p = {p}")
+    print(f"  q = {q}")
+    print(f"  n = {n}  ({len(str(n))} cifras)")
+
+    entrada_e = (await _input("\\nCuantas cifras quieres que tenga e? (ENTER = 65537): ")).strip()
+
+    if entrada_e == "":
+        e = 65537
+        if math.gcd(e, phi) != 1:
+            e = 3
+            while math.gcd(e, phi) != 1:
+                e += 2
+        print(f"  -> e estandar: {e}")
+    else:
+        cifras_e = int(entrada_e)
+        bits_e = cifras_a_bits(cifras_e)
+        intentos = 0
+        while True:
+            candidato = random.getrandbits(bits_e)
+            candidato |= (1 << (bits_e - 1))
+            candidato |= 1
+            if math.gcd(candidato, phi) == 1:
+                e = candidato
+                break
+            intentos += 1
+            if intentos > 100000:
+                print("  No se encontro e valido con ese tamano, usando 65537.")
+                e = 65537
+                break
+
+    d = pow(e, -1, phi)
+
+    pem_pub  = generar_clave_publica_pem(n, e)
+    pem_priv = generar_clave_privada_pem(n, e, d, p, q)
+
+    print()
+    print("=" * 50)
+    print("CLAVES GENERADAS")
+    print("=" * 50)
+    print(f"p    = {p}")
+    print(f"q    = {q}")
+    print(f"n    = {n}")
+    print(f"phi  = {phi}")
+    print(f"e    = {e}")
+    print(f"d    = {d}")
+    print()
+    print(pem_pub)
+    print()
+    print(pem_priv)
+    print()
+    print("(En el navegador no se puede guardar ficheros.")
+    print(" Copia el texto de arriba manualmente si lo necesitas.)")
+
+
+# ── Abecedario / seed ──
 
 def generar_abecedario_con_seed(seed):
     letras = list("abcdefghijklmnopqrstuvwxyz")
@@ -263,10 +445,10 @@ def mostrar_abecedario():
     print()
 
 
+# ── Funciones RSA async ──
+
 async def _input(prompt=''):
-    from pyodide.ffi import to_js
-    result = await __builtins__.__dict__['_js_wait'](to_js(str(prompt)))
-    return str(result)
+    return str(await __builtins__.__dict__['_js_wait'](str(prompt)))
 
 
 async def elegir_modo_rsa():
@@ -468,18 +650,24 @@ async def start():
     print("")
     print("Cifrado y descifrado RSA")
     print("----------------------------")
+    print("g -> generar claves RSA")
     print("n -> numeros")
     print("l -> letras")
     print("s -> seed personalizada")
     print("b -> buscar seeds string")
     print("")
     modo = await _input("Elige opcion: ")
-    if modo.lower() in ("n", "numeros"):
+
+    if modo.lower() in ("g", "generar"):
+        await generar_claves_rsa()
+
+    elif modo.lower() in ("n", "numeros"):
         opcion = await _input("cifrar o descifrar (c/d): ")
         if opcion.lower() in ("c", "cifrar"):
             await cifrar_numero()
         elif opcion.lower() in ("d", "descifrar"):
             await descifrar_numero()
+
     elif modo.lower() in ("l", "letras"):
         seed = await _input("Introduce seed (vacio = normal): ")
         if seed:
@@ -492,12 +680,16 @@ async def start():
             await cifrar_texto()
         elif opcion.lower() in ("d", "descifrar"):
             await descifrar_texto()
+
     elif modo.lower() in ("s", "seed"):
         await crear_seed_personalizada()
+
     elif modo.lower() in ("b", "buscar"):
         await buscar_seed_string()
+
     else:
         print("Opcion invalida")
+
     reiniciar = await _input("\\nReiniciar? (y/n): ")
     if reiniciar.lower() in ("y", ""):
         await start()
@@ -508,15 +700,15 @@ await start()
 async function main() {
   const pyodide = await loadPyodide();
 
-  pyodide.setStdout({ batched: (text) => printLine(text, 'out') });
-  pyodide.setStderr({ batched: (text) => printLine(text, 'err') });
+  pyodide.setStdout({ batched: function(text) { printLine(text, 'out'); } });
+  pyodide.setStderr({ batched: function(text) { printLine(text, 'err'); } });
 
-  // Inyectamos la función directamente en globals de Python (no via js module)
-  pyodide.globals.set('_js_wait', (prompt) => {
-    return waitForInput(prompt ? prompt : '');
+  // Pasar waitForInput a globals de Python
+  pyodide.globals.set('_js_wait', function(prompt) {
+    return waitForInput(prompt ? prompt.toString() : '');
   });
 
-  // Parcheamos builtins para que _input pueda acceder a _js_wait
+  // Inyectarlo en builtins para que _input() lo encuentre
   await pyodide.runPythonAsync(`
 import builtins
 builtins.__dict__['_js_wait'] = _js_wait
@@ -531,8 +723,10 @@ builtins.__dict__['_js_wait'] = _js_wait
   });
 
   printLine('', 'out');
-  printLine('— Programa terminado. Recarga la pagina para reiniciar. —', 'info');
-  inputEl.placeholder = 'Recarga la página para reiniciar';
+  printLine('-- Programa terminado. Recarga la pagina para reiniciar. --', 'info');
+  inputEl.disabled = true;
+  sendBtn.disabled = true;
+  inputEl.placeholder = 'Recarga la pagina para reiniciar';
 }
 
 main().catch(function(e) {
