@@ -935,58 +935,140 @@ async def buscar_seed_string():
             print(f"Intentos: {intentos}")
 
 
-async def start():
-    print("")
-    print("Cifrado y descifrado RSA")
-    print("----------------------------")
-    print("g -> generar claves RSA")
-    print("n -> numeros")
-    print("l -> letras")
-    print("p -> herramientas PEM")
-    print("s -> seed personalizada")
-    print("b -> buscar seeds string")
-    print("")
-    modo = await _input("Elige opcion: ")
+async def menu_seeds():
+    print()
+    print("Seeds")
+    print("─" * 40)
+    print("1 -> Seed personalizada")
+    print("2 -> Buscar seeds")
+    print()
 
-    if modo.lower() in ("g", "generar"):
-        await generar_claves_rsa()
+    opcion = (await _input("Elige opcion: ")).strip()
 
-    elif modo.lower() in ("n", "numeros"):
-        opcion = await _input("cifrar o descifrar (c/d): ")
-        if opcion.lower() in ("c", "cifrar"):
-            await cifrar_numero()
-        elif opcion.lower() in ("d", "descifrar"):
-            await descifrar_numero()
-
-    elif modo.lower() in ("l", "letras"):
-        seed = await _input("Introduce seed (vacio = normal): ")
-        if seed:
-            ABECEDARIO.update(generar_abecedario_con_seed(seed))
-            NUMERO_A_LETRA.clear()
-            NUMERO_A_LETRA.update({v: k for k, v in ABECEDARIO.items()})
-        mostrar_abecedario()
-        opcion = await _input("cifrar o descifrar (c/d): ")
-        if opcion.lower() in ("c", "cifrar"):
-            await cifrar_texto()
-        elif opcion.lower() in ("d", "descifrar"):
-            await descifrar_texto()
-
-    elif modo.lower() in ("p", "pem"):
-        await herramientas_pem()
-
-    elif modo.lower() in ("s", "seed"):
+    if opcion == "1":
         await crear_seed_personalizada()
 
-    elif modo.lower() in ("b", "buscar"):
+    elif opcion == "2":
         await buscar_seed_string()
 
     else:
         print("Opcion invalida")
 
-    reiniciar = await _input("\\nReiniciar? (y/n): ")
-    if reiniciar.lower() in ("y", ""):
+
+async def menu_modo_avanzado():
+    print()
+    print("Modo avanzado")
+    print("─" * 40)
+    print("1 -> Generar claves")
+    print("2 -> Herramientas PEM")
+    print("3 -> Seeds")
+    print()
+
+    opcion = (await _input("Elige opcion: ")).strip()
+
+    if opcion == "1":
+        await generar_claves_rsa()
+
+    elif opcion == "2":
+        await herramientas_pem()
+
+    elif opcion == "3":
+        await menu_seeds()
+
+    else:
+        print("Opcion invalida")
+
+
+async def start():
+    print()
+    print("Cifrado y descifrado RSA")
+    print("----------------------------")
+    print("1 -> Numeros")
+    print("2 -> Letras")
+    print("3 -> Modo avanzado")
+    print()
+
+    opcion = (await _input("Elige opcion: ")).strip()
+
+    # ─────────────────────────────
+    # NUMEROS
+    # ─────────────────────────────
+    if opcion == "1":
+
+        print()
+        print("Numeros")
+        print("----------------------------")
+        print("1 -> Cifrar")
+        print("2 -> Descifrar")
+        print()
+
+        accion = (await _input("Elige opcion: ")).strip()
+
+        if accion == "1":
+            await cifrar_numero()
+
+        elif accion == "2":
+            await descifrar_numero()
+
+        else:
+            print("Opcion invalida")
+
+    # ─────────────────────────────
+    # LETRAS
+    # ─────────────────────────────
+    elif opcion == "2":
+
+        seed = await _input("Introduce seed (vacio = normal): ")
+
+        if seed:
+            ABECEDARIO.update(
+                generar_abecedario_con_seed(seed)
+            )
+
+            NUMERO_A_LETRA.clear()
+
+            NUMERO_A_LETRA.update(
+                {v: k for k, v in ABECEDARIO.items()}
+            )
+
+        mostrar_abecedario()
+
+        print()
+        print("Letras")
+        print("----------------------------")
+        print("1 -> Cifrar")
+        print("2 -> Descifrar")
+        print()
+
+        accion = (await _input("Elige opcion: ")).strip()
+
+        if accion == "1":
+            await cifrar_texto()
+
+        elif accion == "2":
+            await descifrar_texto()
+
+        else:
+            print("Opcion invalida")
+
+    # ─────────────────────────────
+    # MODO AVANZADO
+    # ─────────────────────────────
+    elif opcion == "3":
+        await menu_modo_avanzado()
+
+    else:
+        print("Opcion invalida")
+
+    print()
+
+    reiniciar = (await _input("Reiniciar? (y/n): ")).strip().lower()
+
+    if reiniciar in ("y", "yes", "si", "s", ""):
         await start()
 
+
+await start()
 await start()
 `;
 
