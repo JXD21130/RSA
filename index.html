@@ -184,8 +184,6 @@ inputEl.addEventListener('keydown', function(e) {
 });
 sendBtn.addEventListener('click', submitInput);
 
-// Nota: open() para guardar ficheros no funciona en el navegador,
-// se sustituye por mostrar el contenido en pantalla para copiarlo.
 const PYTHON_CODE = `
 import math
 import random
@@ -266,6 +264,108 @@ def encode_der_tlv(tag, value):
     return bytes([tag]) + len_bytes + value
 
 
+def decode_der_tlv(data, offset=0):
+    tag = data[offset]
+    offset += 1
+    length_byte = data[offset]
+    offset += 1
+    if length_byte < 0x80:
+        length = length_byte
+    elif length_byte == 0x81:
+        length = data[offset]
+        offset += 1
+    elif length_byte == 0x82:
+        length = (data[offset] << 8) | data[offset + 1]
+        offset += 2
+    else:
+        raise ValueError("Longitud DER no soportada")
+    value = data[offset:offset + length]
+    return tag, value, offset + length
+
+
+def decode_der_integer(value_bytes):
+    return int.from_bytes(value_bytes, byteorder='big')
+
+
+def pem_a_der(pem_text):
+    lines = pem_text.strip().splitlines()
+    b64_lines = [l for l in lines if not l.startswith('-----')]
+    return base64.b64decode(''.join(b64_lines))
+
+
+def parsear_clave_publica_pem(pem_text):
+    der = pem_a_der(pem_text)
+    tag, seq_val, _ = decode_der_tlv(der, 0)
+    if tag != 0x30:
+        raise ValueError("Se esperaba SEQUENCE")
+    offset = 0
+    tag, n_bytes, offset = decode_der_tlv(seq_val, offset)
+    n = decode_der_integer(n_bytes)
+    tag, e_bytes, offset = decode_der_tlv(seq_val, offset)
+    e = decode_der_integer(e_bytes)
+    return n, e
+
+
+def parsear_clave_privada_pem(pem_text):
+    der = pem_a_der(pem_text)
+    tag, seq_val, _ = decode_der_tlv(der, 0)
+    if tag != 0x30:
+        raise ValueError("Se esperaba SEQUENCE")
+    offset = 0
+    tag, ver_bytes, offset = decode_der_tlv(seq_val, offset)
+    tag, n_bytes, offset = decode_der_tlv(seq_val, offset)
+    n = decode_der_integer(n_bytes)
+    tag, e_bytes, offset = decode_der_tlv(seq_val, offset)
+    e = decode_der_integer(e_bytes)
+    tag, d_bytes, offset = decode_der_tlv(seq_val, offset)
+    d = decode_der_integer(d_bytes)
+    tag, p_bytes, offset = decode_der_tlv(seq_val, offset)
+    p = decode_der_integer(p_bytes)
+    tag, q_bytes, offset = decode_der_tlv(seq_val, offset)
+    q = decode_der_integer(q_bytes)
+    return n, e, d, p, q
+
+
+def numeros_a_pem_mensaje(numeros_cifrados):
+    partes = []
+    for num in numeros_cifrados:
+        es_negativo = num < 0
+        abs_val = abs(num)
+        if abs_val == 0:
+            num_bytes = b'\\x00'
+        else:
+            longitud = (abs_val.bit_length() + 7) // 8
+            num_bytes = abs_val.to_bytes(longitud, byteorder='big')
+        signo = b'\\x01' if es_negativo else b'\\x00'
+        lon = len(num_bytes).to_bytes(4, byteorder='big')
+        partes.append(signo + lon + num_bytes)
+    datos = b''.join(partes)
+    b64 = base64.encodebytes(datos).decode('ascii')
+    return (
+        "-----BEGIN RSA ENCRYPTED MESSAGE-----\\n"
+        + b64
+        + "-----END RSA ENCRYPTED MESSAGE-----"
+    )
+
+
+def pem_mensaje_a_numeros(pem_text):
+    datos = pem_a_der(pem_text)
+    numeros = []
+    i = 0
+    while i < len(datos):
+        signo = datos[i]
+        i += 1
+        longitud = int.from_bytes(datos[i:i+4], byteorder='big')
+        i += 4
+        num_bytes = datos[i:i+longitud]
+        i += longitud
+        valor = int.from_bytes(num_bytes, byteorder='big')
+        if signo == 1:
+            valor = -valor
+        numeros.append(valor)
+    return numeros
+
+
 def generar_clave_publica_pem(n, e):
     seq = encode_der_integer(n) + encode_der_integer(e)
     der = encode_der_tlv(0x30, seq)
@@ -301,6 +401,201 @@ def generar_clave_privada_pem(n, e, d, p, q):
     )
 
 
+# ── Input async ──
+
+async def _input(prompt=''):
+    return str(await __builtins__.__dict__['_js_wait'](str(prompt)))
+
+
+# ── Leer bloque PEM multilínea ──
+
+async def leer_bloque_pem_async():
+    print("Pega el bloque PEM linea a linea.")
+    print("La lectura termina automaticamente al detectar -----END ...-----")
+    lineas = []
+    while True:
+        linea = await _input("")
+        lineas.append(linea)
+        if linea.strip().startswith("-----END"):
+            break
+    return "\\n".join(lineas)
+
+
+# ── Herramientas PEM (async) ──
+
+async def herramientas_pem():
+    print()
+    print("Herramientas PEM")
+    print("-" * 40)
+    print("1 -> PEM clave publica  -> numeros (n, e)")
+    print("2 -> PEM clave privada  -> numeros (n, e, d, p, q)")
+    print("3 -> Numeros cifrados   -> PEM mensaje cifrado")
+    print("4 -> PEM mensaje cifrado -> numeros")
+    print("5 -> Cifrar texto/numero y obtener PEM mensaje")
+    print("6 -> Descifrar PEM mensaje cifrado")
+    print()
+    opcion = (await _input("Elige opcion: ")).strip()
+
+    if opcion == "1":
+        pem = await leer_bloque_pem_async()
+        try:
+            n, e = parsear_clave_publica_pem(pem)
+            print()
+            print("Clave publica extraida:")
+            print(f"  n = {n}")
+            print(f"  e = {e}")
+            print(f"  Bits de n: {n.bit_length()}")
+            print(f"  Cifras de n: {len(str(n))}")
+        except Exception as ex:
+            print(f"Error al parsear: {ex}")
+
+    elif opcion == "2":
+        pem = await leer_bloque_pem_async()
+        try:
+            n, e, d, p, q = parsear_clave_privada_pem(pem)
+            phi = (p - 1) * (q - 1)
+            print()
+            print("Clave privada extraida:")
+            print(f"  n    = {n}")
+            print(f"  e    = {e}")
+            print(f"  d    = {d}")
+            print(f"  p    = {p}")
+            print(f"  q    = {q}")
+            print(f"  phi  = {phi}")
+        except Exception as ex:
+            print(f"Error al parsear: {ex}")
+
+    elif opcion == "3":
+        entrada = await _input("Numeros cifrados separados por espacios: ")
+        try:
+            numeros = list(map(int, entrada.strip().split()))
+            pem = numeros_a_pem_mensaje(numeros)
+            print()
+            print(pem)
+        except Exception as ex:
+            print(f"Error: {ex}")
+
+    elif opcion == "4":
+        pem = await leer_bloque_pem_async()
+        try:
+            numeros = pem_mensaje_a_numeros(pem)
+            print()
+            print("Numeros extraidos del mensaje:")
+            print(" ".join(map(str, numeros)))
+        except Exception as ex:
+            print(f"Error al parsear: {ex}")
+
+    elif opcion == "5":
+        print()
+        print("Que quieres cifrar?")
+        print("l -> texto / letras")
+        print("n -> un numero")
+        tipo = (await _input("Elige (l/n): ")).strip().lower()
+
+        n = int(await _input("n: "))
+        e_o_d = (await _input("Cifrar con e o con d? (e/d): ")).strip().lower()
+        exponente = int(await _input(f"Valor de {e_o_d}: "))
+
+        if tipo in ("n", "numero"):
+            numero = int(await _input("Numero a cifrar: "))
+            cifrado = pow(numero, exponente, n)
+            numeros_cifrados = [cifrado]
+            print(f"\\nNumero cifrado: {cifrado}")
+        else:
+            seed = (await _input("Seed para abecedario (ENTER = normal): ")).strip()
+            abc_local = dict(ABECEDARIO)
+            n2l_local = dict(NUMERO_A_LETRA)
+            if seed:
+                abc_local.update(generar_abecedario_con_seed(seed))
+                n2l_local.clear()
+                n2l_local.update({v: k for k, v in abc_local.items()})
+            texto = await _input("Texto a cifrar: ")
+            numeros_planos = []
+            for ch in texto:
+                if ch == " ":
+                    numeros_planos.append(0)
+                elif ch.lower() in abc_local:
+                    numeros_planos.append(abc_local[ch.lower()])
+                elif ch.isdigit():
+                    numeros_planos.append(MARCADOR_DIGITO)
+                    numeros_planos.append(OFFSET_DIGITO + int(ch))
+                else:
+                    print(f"  (Ignorado: {ch})")
+            numeros_cifrados = []
+            for v in numeros_planos:
+                if v == MARCADOR_DIGITO:
+                    numeros_cifrados.append(-pow(abs(v), exponente, n))
+                elif v == 0:
+                    numeros_cifrados.append(0)
+                else:
+                    numeros_cifrados.append(pow(v, exponente, n))
+            print(f"\\nNumeros cifrados: {' '.join(map(str, numeros_cifrados))}")
+
+        pem = numeros_a_pem_mensaje(numeros_cifrados)
+        print()
+        print(pem)
+        print()
+        print("(Copia el bloque PEM de arriba manualmente.)")
+
+    elif opcion == "6":
+        pem = await leer_bloque_pem_async()
+        try:
+            numeros_cifrados = pem_mensaje_a_numeros(pem)
+        except Exception as ex:
+            print(f"Error al parsear PEM: {ex}")
+            return
+
+        print(f"\\nNumeros cifrados extraidos:")
+        print(" ".join(map(str, numeros_cifrados)))
+
+        n = int(await _input("\\nn: "))
+        e_o_d = (await _input("Descifrar con e o con d? (e/d): ")).strip().lower()
+        exponente = int(await _input(f"Valor de {e_o_d}: "))
+
+        descifrados = []
+        for c in numeros_cifrados:
+            if c < 0:
+                descifrados.append(MARCADOR_DIGITO)
+            elif c == 0:
+                descifrados.append(0)
+            else:
+                descifrados.append(pow(c, exponente, n))
+
+        print(f"\\nNumeros descifrados:")
+        print(" ".join(map(str, descifrados)))
+
+        seed = (await _input("\\nSeed para abecedario (ENTER = normal): ")).strip()
+        abc_local = dict(ABECEDARIO)
+        n2l_local = dict(NUMERO_A_LETRA)
+        if seed:
+            abc_local.update(generar_abecedario_con_seed(seed))
+            n2l_local.clear()
+            n2l_local.update({v: k for k, v in abc_local.items()})
+
+        resultado = []
+        i = 0
+        while i < len(descifrados):
+            v = descifrados[i]
+            if v == 0:
+                resultado.append(" ")
+            elif v == MARCADOR_DIGITO:
+                i += 1
+                if i < len(descifrados):
+                    digito = descifrados[i] - OFFSET_DIGITO
+                    if 0 <= digito <= 9:
+                        resultado.append(str(digito))
+            elif v in n2l_local:
+                resultado.append(n2l_local[v])
+            else:
+                resultado.append(f"[{v}]")
+            i += 1
+        texto_descifrado = "".join(resultado)
+        print(f"\\nTexto descifrado: {texto_descifrado}")
+
+    else:
+        print("Opcion invalida")
+
+
 # ── Generacion de claves (async) ──
 
 async def generar_claves_rsa():
@@ -309,33 +604,25 @@ async def generar_claves_rsa():
     print("-" * 40)
     print("Pulsa ENTER en cualquier campo para usar un tamano aleatorio.")
     print()
-
     entrada_n = (await _input("Cuantas cifras quieres que tenga n? (ENTER = aleatorio): ")).strip()
     if entrada_n == "":
         cifras_n = random.randint(4, 20)
         print(f"  -> Cifras de n elegidas aleatoriamente: {cifras_n}")
     else:
         cifras_n = int(entrada_n)
-
     bits_n = cifras_a_bits(cifras_n)
     bits_primo = max(bits_n // 2, 8)
-
     print(f"\\nGenerando primos p y q (~{bits_primo} bits cada uno)...")
-
     p = primo_aleatorio(bits_primo)
     q = primo_aleatorio(bits_primo)
     while q == p:
         q = primo_aleatorio(bits_primo)
-
     n = p * q
     phi = (p - 1) * (q - 1)
-
     print(f"  p = {p}")
     print(f"  q = {q}")
     print(f"  n = {n}  ({len(str(n))} cifras)")
-
     entrada_e = (await _input("\\nCuantas cifras quieres que tenga e? (ENTER = 65537): ")).strip()
-
     if entrada_e == "":
         e = 65537
         if math.gcd(e, phi) != 1:
@@ -359,12 +646,9 @@ async def generar_claves_rsa():
                 print("  No se encontro e valido con ese tamano, usando 65537.")
                 e = 65537
                 break
-
     d = pow(e, -1, phi)
-
     pem_pub  = generar_clave_publica_pem(n, e)
     pem_priv = generar_clave_privada_pem(n, e, d, p, q)
-
     print()
     print("=" * 50)
     print("CLAVES GENERADAS")
@@ -446,10 +730,6 @@ def mostrar_abecedario():
 
 
 # ── Funciones RSA async ──
-
-async def _input(prompt=''):
-    return str(await __builtins__.__dict__['_js_wait'](str(prompt)))
-
 
 async def elegir_modo_rsa():
     print("\\nModo RSA")
@@ -535,6 +815,15 @@ async def cifrar_texto():
             cifrados.append(pow(v, exponente, n))
     print(f"\\nNumeros cifrados con {modo_texto}:")
     print(" ".join(map(str, cifrados)))
+
+    exportar = await _input("\\nExportar como -----BEGIN RSA ENCRYPTED MESSAGE-----? (y/n): ")
+    if exportar.lower() in ("y", "si", ""):
+        pem = numeros_a_pem_mensaje(cifrados)
+        print()
+        print(pem)
+        print()
+        print("(Copia el bloque PEM de arriba manualmente.)")
+
     elegir = await _input("\\nComprobar si funciona? (y/n): ")
     if elegir.lower() in ("si", "y", ""):
         descifrados = []
@@ -653,6 +942,7 @@ async def start():
     print("g -> generar claves RSA")
     print("n -> numeros")
     print("l -> letras")
+    print("p -> herramientas PEM")
     print("s -> seed personalizada")
     print("b -> buscar seeds string")
     print("")
@@ -681,6 +971,9 @@ async def start():
         elif opcion.lower() in ("d", "descifrar"):
             await descifrar_texto()
 
+    elif modo.lower() in ("p", "pem"):
+        await herramientas_pem()
+
     elif modo.lower() in ("s", "seed"):
         await crear_seed_personalizada()
 
@@ -703,12 +996,10 @@ async function main() {
   pyodide.setStdout({ batched: function(text) { printLine(text, 'out'); } });
   pyodide.setStderr({ batched: function(text) { printLine(text, 'err'); } });
 
-  // Pasar waitForInput a globals de Python
   pyodide.globals.set('_js_wait', function(prompt) {
     return waitForInput(prompt ? prompt.toString() : '');
   });
 
-  // Inyectarlo en builtins para que _input() lo encuentre
   await pyodide.runPythonAsync(`
 import builtins
 builtins.__dict__['_js_wait'] = _js_wait
