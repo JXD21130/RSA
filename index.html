@@ -2,102 +2,149 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RSA</title>
 
 <style>
 body {
   margin: 0;
-  background: black;
-  color: white;
+  background: #0d0d0d;
+  color: #e0e0e0;
   font-family: monospace;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
 }
 
 #terminal {
+  flex: 1;
   padding: 10px;
-  height: 90vh;
   overflow-y: auto;
   white-space: pre-wrap;
 }
 
-#inputBox {
-  width: 100%;
-  padding: 10px;
+#inputBar {
+  display: flex;
+  border-top: 1px solid #222;
+}
+
+#input {
+  flex: 1;
   background: #111;
-  color: white;
   border: none;
+  color: white;
+  padding: 10px;
   outline: none;
   font-family: monospace;
 }
-</style>
 
-<script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
+button {
+  background: #222;
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  cursor: pointer;
+}
+
+.line { margin: 2px 0; }
+.out { color: #ddd; }
+.err { color: #ff5c5c; }
+.info { color: #5cc8ff; }
+.inp { color: #ffd166; }
+</style>
 </head>
 
 <body>
 
 <div id="terminal"></div>
-<input id="inputBox" placeholder="Escribe aquí y pulsa ENTER">
+
+<div id="inputBar">
+  <input id="input" placeholder="Escribe aquí..." disabled />
+  <button id="btn" disabled>Enter</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
 
 <script>
-let pyodide;
-let terminal = document.getElementById("terminal");
-let inputBox = document.getElementById("inputBox");
+const term = document.getElementById("terminal");
+const input = document.getElementById("input");
+const btn = document.getElementById("btn");
 
 let resolver = null;
 
-// imprimir en terminal
-function print(text){
-  terminal.innerText += text + "\n";
-  terminal.scrollTop = terminal.scrollHeight;
+function print(text, cls="out"){
+  const div = document.createElement("div");
+  div.className = "line " + cls;
+  div.textContent = text;
+  term.appendChild(div);
+  term.scrollTop = term.scrollHeight;
 }
 
-// INPUT estilo consola
-function input(promptText){
-  print(promptText);
+function ask(promptText){
+  print(promptText, "out");
+  input.disabled = false;
+  btn.disabled = false;
+  input.focus();
 
-  return new Promise(resolve => {
-    resolver = resolve;
-  });
+  return new Promise(res => resolver = res);
 }
 
-inputBox.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && resolver){
-    let value = inputBox.value;
-    inputBox.value = "";
-    resolver(value);
-    resolver = null;
-  }
+function submit(){
+  if(!resolver) return;
+  const val = input.value;
+  print("> " + val, "inp");
+
+  input.value = "";
+  input.disabled = true;
+  btn.disabled = true;
+
+  const r = resolver;
+  resolver = null;
+  r(val);
+}
+
+btn.onclick = submit;
+input.addEventListener("keydown", e=>{
+  if(e.key === "Enter") submit();
 });
 
-async function main(){
-  pyodide = await loadPyodide();
-
-  // 🔥 conectamos Python con JS terminal
-  pyodide.globals.set("js_input", input);
-  pyodide.globals.set("js_print", print);
-
-  await pyodide.runPythonAsync(`
-import js
-import builtins
-
-print = js.js_print
-
-async def input(prompt=""):
-    return await js.js_input(prompt)
-
-builtins.input = input
-  `);
-
-  print("✔ Python listo");
+async function download(filename, text){
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text]));
+  a.download = filename;
+  a.click();
 }
 
-async function run(){
-  const code = await fetch("main.py").then(r => r.text());
-  await pyodide.runPythonAsync(code);
+async function main(){
+  const pyodide = await loadPyodide();
+
+  pyodide.setStdout({ batched: t => print(t, "out") });
+  pyodide.setStderr({ batched: t => print(t, "err") });
+
+  pyodide.globals.set("_js_input", ask);
+  pyodide.globals.set("download_file", download);
+
+  await pyodide.runPythonAsync(`
+import builtins
+from js import _js_input, download_file
+
+async def input_async(msg=""):
+    return await _js_input(str(msg))
+
+builtins.input = input_async
+download = download_file
+`);
+
+  print("RSA Terminal listo", "info");
+
+  await pyodide.runPythonAsync(`
+print("Sistema cargado correctamente")
+`);
+
+  print("Listo para usar", "info");
 }
 
 main();
-run();
 </script>
 
 </body>
