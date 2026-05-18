@@ -8,23 +8,25 @@
 body {
   margin: 0;
   background: black;
-  color: white; /* 🔥 FIX FUENTE BLANCA */
+  color: white;
   font-family: monospace;
 }
 
 #terminal {
   padding: 10px;
-  white-space: pre-wrap;
   height: 90vh;
   overflow-y: auto;
+  white-space: pre-wrap;
 }
 
-button {
+#inputBox {
   width: 100%;
   padding: 10px;
   background: #111;
   color: white;
-  border: 1px solid #333;
+  border: none;
+  outline: none;
+  font-family: monospace;
 }
 </style>
 
@@ -33,46 +35,69 @@ button {
 
 <body>
 
-<div id="terminal">Cargando Python...\n</div>
-<button onclick="runPython()">▶ Ejecutar RSA</button>
+<div id="terminal"></div>
+<input id="inputBox" placeholder="Escribe aquí y pulsa ENTER">
 
 <script>
 let pyodide;
-let term = document.getElementById("terminal");
+let terminal = document.getElementById("terminal");
+let inputBox = document.getElementById("inputBox");
 
-function log(t){
-  term.innerText += t + "\n";
+let resolver = null;
+
+// imprimir en terminal
+function print(text){
+  terminal.innerText += text + "\n";
+  terminal.scrollTop = terminal.scrollHeight;
 }
 
-async function init(){
+// INPUT estilo consola
+function input(promptText){
+  print(promptText);
+
+  return new Promise(resolve => {
+    resolver = resolve;
+  });
+}
+
+inputBox.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && resolver){
+    let value = inputBox.value;
+    inputBox.value = "";
+    resolver(value);
+    resolver = null;
+  }
+});
+
+async function main(){
   pyodide = await loadPyodide();
 
-  // 🔥 FIX INPUT()
-  pyodide.runPython(`
+  // 🔥 conectamos Python con JS terminal
+  pyodide.globals.set("js_input", input);
+  pyodide.globals.set("js_print", print);
+
+  await pyodide.runPythonAsync(`
 import js
 import builtins
 
-def input(prompt=""):
-    return js.prompt(prompt)
+print = js.js_print
+
+async def input(prompt=""):
+    return await js.js_input(prompt)
 
 builtins.input = input
   `);
 
-  log("✔ Python listo");
+  print("✔ Python listo");
 }
 
-async function runPython(){
-  term.innerText = "";
-
-  try {
-    const code = await fetch("main.py").then(r => r.text());
-    await pyodide.runPythonAsync(code);
-  } catch(e){
-    log("ERROR: " + e);
-  }
+async function run(){
+  const code = await fetch("main.py").then(r => r.text());
+  await pyodide.runPythonAsync(code);
 }
 
-init();
+main();
+run();
 </script>
 
 </body>
