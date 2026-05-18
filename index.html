@@ -5,26 +5,26 @@
 <title>RSA</title>
 
 <style>
-body{
-  margin:0;
-  background:#000;
-  color:#fff; /* 🔥 fuente blanca FIX */
+body {
+  margin: 0;
+  background: black;
+  color: white; /* 🔥 FIX FUENTE BLANCA */
   font-family: monospace;
 }
 
-#terminal{
-  padding:10px;
-  height:90vh;
-  overflow:auto;
-  white-space:pre-wrap;
+#terminal {
+  padding: 10px;
+  white-space: pre-wrap;
+  height: 90vh;
+  overflow-y: auto;
 }
 
-button{
-  width:100%;
-  padding:12px;
-  background:#111;
-  color:#fff;
-  border:1px solid #333;
+button {
+  width: 100%;
+  padding: 10px;
+  background: #111;
+  color: white;
+  border: 1px solid #333;
 }
 </style>
 
@@ -33,8 +33,8 @@ button{
 
 <body>
 
-<div id="terminal">Inicializando Python...\n</div>
-<button onclick="run()">▶ Ejecutar RSA</button>
+<div id="terminal">Cargando Python...\n</div>
+<button onclick="runPython()">▶ Ejecutar RSA</button>
 
 <script>
 let pyodide;
@@ -44,10 +44,10 @@ function log(t){
   term.innerText += t + "\n";
 }
 
-async function main(){
+async function init(){
   pyodide = await loadPyodide();
 
-  // 🔥 FIX REAL INPUT()
+  // 🔥 FIX INPUT()
   pyodide.runPython(`
 import js
 import builtins
@@ -61,8 +61,7 @@ builtins.input = input
   log("✔ Python listo");
 }
 
-async function run(){
-
+async function runPython(){
   term.innerText = "";
 
   try {
@@ -73,7 +72,7 @@ async function run(){
   }
 }
 
-main();
+init();
 </script>
 
 </body>
