@@ -3,54 +3,54 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RSA</title>
+<title>Terminal</title>
 
 <style>
-body {
-  margin: 0;
-  background: #0d0d0d;
-  color: #e0e0e0;
-  font-family: monospace;
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
+body{
+  margin:0;
+  background:#0d0d0d;
+  color:#e0e0e0;
+  font-family:monospace;
+  height:100vh;
+  display:flex;
+  flex-direction:column;
 }
 
-#terminal {
-  flex: 1;
-  padding: 10px;
-  overflow-y: auto;
-  white-space: pre-wrap;
+#terminal{
+  flex:1;
+  padding:10px;
+  overflow-y:auto;
+  white-space:pre-wrap;
 }
 
-#inputBar {
-  display: flex;
-  border-top: 1px solid #222;
+#bar{
+  display:flex;
+  border-top:1px solid #222;
 }
 
-#input {
-  flex: 1;
-  background: #111;
-  border: none;
-  color: white;
-  padding: 10px;
-  outline: none;
-  font-family: monospace;
+#input{
+  flex:1;
+  padding:10px;
+  background:#111;
+  border:none;
+  color:white;
+  outline:none;
+  font-family:monospace;
 }
 
-button {
-  background: #222;
-  color: white;
-  border: none;
-  padding: 10px 20px;
-  cursor: pointer;
+button{
+  padding:10px 20px;
+  background:#222;
+  color:white;
+  border:none;
+  cursor:pointer;
 }
 
-.line { margin: 2px 0; }
-.out { color: #ddd; }
-.err { color: #ff5c5c; }
-.info { color: #5cc8ff; }
-.inp { color: #ffd166; }
+.line{margin:2px 0}
+.out{color:#ddd}
+.inp{color:#ffd166}
+.err{color:#ff5c5c}
+.info{color:#5cc8ff}
 </style>
 </head>
 
@@ -58,90 +58,79 @@ button {
 
 <div id="terminal"></div>
 
-<div id="inputBar">
-  <input id="input" placeholder="Escribe aquí..." disabled />
-  <button id="btn" disabled>Enter</button>
+<div id="bar">
+  <input id="input" disabled placeholder="cargando...">
+  <button id="btn" disabled>OK</button>
 </div>
 
 <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
 
 <script>
-const term = document.getElementById("terminal");
-const input = document.getElementById("input");
-const btn = document.getElementById("btn");
+const term=document.getElementById("terminal");
+const input=document.getElementById("input");
+const btn=document.getElementById("btn");
 
-let resolver = null;
+let resolver=null;
 
-function print(text, cls="out"){
-  const div = document.createElement("div");
-  div.className = "line " + cls;
-  div.textContent = text;
-  term.appendChild(div);
-  term.scrollTop = term.scrollHeight;
+function print(t,cls="out"){
+  const d=document.createElement("div");
+  d.className="line "+cls;
+  d.textContent=t;
+  term.appendChild(d);
+  term.scrollTop=term.scrollHeight;
 }
 
-function ask(promptText){
-  print(promptText, "out");
-  input.disabled = false;
-  btn.disabled = false;
+function ask(msg){
+  print(msg,"out");
+  input.disabled=false;
+  btn.disabled=false;
   input.focus();
-
-  return new Promise(res => resolver = res);
+  return new Promise(r=>resolver=r);
 }
 
 function submit(){
   if(!resolver) return;
-  const val = input.value;
-  print("> " + val, "inp");
-
-  input.value = "";
-  input.disabled = true;
-  btn.disabled = true;
-
-  const r = resolver;
-  resolver = null;
-  r(val);
+  const v=input.value;
+  print("> "+v,"inp");
+  input.value="";
+  input.disabled=true;
+  btn.disabled=true;
+  resolver(v);
+  resolver=null;
 }
 
-btn.onclick = submit;
-input.addEventListener("keydown", e=>{
-  if(e.key === "Enter") submit();
-});
-
-async function download(filename, text){
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([text]));
-  a.download = filename;
-  a.click();
-}
+btn.onclick=submit;
+input.onkeydown=e=>{if(e.key==="Enter")submit();};
 
 async function main(){
-  const pyodide = await loadPyodide();
+  const pyodide=await loadPyodide();
 
-  pyodide.setStdout({ batched: t => print(t, "out") });
-  pyodide.setStderr({ batched: t => print(t, "err") });
+  pyodide.setStdout({batched:t=>print(t,"out")});
+  pyodide.setStderr({batched:t=>print(t,"err")});
 
-  pyodide.globals.set("_js_input", ask);
-  pyodide.globals.set("download_file", download);
+  pyodide.globals.set("_ask",ask);
 
   await pyodide.runPythonAsync(`
 import builtins
-from js import _js_input, download_file
+from js import _ask
 
-async def input_async(msg=""):
-    return await _js_input(str(msg))
+async def input(prompt=""):
+    return await _ask(str(prompt))
 
-builtins.input = input_async
-download = download_file
+builtins.input = input
 `);
 
-  print("RSA Terminal listo", "info");
+  input.placeholder="escribe aquí...";
+  input.disabled=false;
+  btn.disabled=false;
+
+  print("Terminal lista","info");
 
   await pyodide.runPythonAsync(`
-print("Sistema cargado correctamente")
+print("Hola, funciona la consola")
+x = input("Dime algo: ")
+print("Escribiste:", x)
 `);
-
-  print("Listo para usar", "info");
 }
 
 main();
