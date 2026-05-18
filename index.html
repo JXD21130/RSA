@@ -2,15 +2,15 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>RSA IDE Web</title>
+<title>RSA Web IDE</title>
 
 <script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
 
 <style>
 body {
   margin: 0;
-  background: #0b0b0b;
-  color: #00ff88;
+  background: #000;
+  color: #ffffff; /* 🔥 TODO BLANCO */
   font-family: monospace;
 }
 
@@ -24,22 +24,22 @@ body {
   width: 50%;
   display: flex;
   flex-direction: column;
+  border-right: 1px solid #333;
 }
 
 textarea {
   flex: 1;
   background: #000;
-  color: #00ff88;
+  color: #ffffff;
   border: none;
-  padding: 10px;
   outline: none;
+  padding: 10px;
   font-size: 14px;
 }
 
 /* TERMINAL */
 #terminal {
   width: 50%;
-  background: #000;
   display: flex;
   flex-direction: column;
 }
@@ -56,7 +56,7 @@ textarea {
   outline: none;
   padding: 10px;
   background: #111;
-  color: #00ff88;
+  color: #ffffff;
 }
 </style>
 </head>
@@ -67,7 +67,8 @@ textarea {
 
 <!-- EDITOR -->
 <div id="editor">
-  <textarea id="code">import math
+  <textarea id="code">
+import math
 import random
 import base64
 import struct
@@ -2027,20 +2028,21 @@ def start():
         start()
 
 
-start()</textarea>
+if __name__ == "__main__":
+    start()
+  </textarea>
 </div>
 
 <!-- TERMINAL -->
 <div id="terminal">
   <div id="output"></div>
-  <input id="input" placeholder="Escribe comando (run, save, open...)" />
+  <input id="input" placeholder="Comandos: run | clear" />
 </div>
 
 </div>
 
 <script>
 let pyodide;
-let fs = {}; // sistema de archivos virtual simple
 
 const out = document.getElementById("output");
 const input = document.getElementById("input");
@@ -2058,11 +2060,22 @@ function clear(){
 async function init(){
   pyodide = await loadPyodide();
 
+  // 🔥 FIX CLAVE: input() -> prompt()
+  await pyodide.runPythonAsync(`
+import builtins
+import js
+
+def js_input(prompt=""):
+    return js.window.prompt(prompt)
+
+builtins.input = js_input
+`);
+
   pyodide.setStdout({ batched: (t) => print(t) });
   pyodide.setStderr({ batched: (t) => print("ERROR: " + t) });
 
   print("✔ RSA IDE listo");
-  print("Comandos: run | save <file> | open <file> | clear");
+  print("Comandos: run | clear");
 }
 
 async function runPython(){
@@ -2070,20 +2083,6 @@ async function runPython(){
     await pyodide.runPythonAsync(code.value);
   } catch (e) {
     print(e.toString());
-  }
-}
-
-function saveFile(name){
-  fs[name] = code.value;
-  print("💾 Guardado: " + name);
-}
-
-function openFile(name){
-  if(fs[name]){
-    code.value = fs[name];
-    print("📂 Abierto: " + name);
-  } else {
-    print("✗ No existe el archivo");
   }
 }
 
@@ -2098,20 +2097,12 @@ input.addEventListener("keydown", async (e) => {
     await runPython();
   }
 
-  else if(cmd.startsWith("save ")){
-    saveFile(cmd.split(" ")[1]);
-  }
-
-  else if(cmd.startsWith("open ")){
-    openFile(cmd.split(" ")[1]);
-  }
-
   else if(cmd === "clear"){
     clear();
   }
 
   else {
-    print("Comando desconocido");
+    print("Comando: run | clear");
   }
 });
 
