@@ -1367,10 +1367,10 @@ function guardarClavesFicheros(s, mensaje_original, cifrados, pem_mensaje, seed_
   if (mensaje_original) {
     const modo_texto = modo_cifrado==='e'?'e (clave pública)':'d (clave privada)';
     const seed_texto = seed_usada||'(normal)';
-    bloque_msg = `\n── Mensaje cifrado ──\nMensaje original: ${mensaje_original}\nSeed            : ${seed_texto}\nCifrado con     : ${modo_texto}\nNúmeros         : ${cifrados.join(' ')}\n\n${pem_mensaje}\n`;
+    bloque_msg = `\n── Mensaje cifrado ──\nSeed            : ${seed_texto}\nCifrado con     : ${modo_texto}\n\n${pem_mensaje}\n`;
   }
 
-  const contenido_publico = `=== CLAVE PÚBLICA RSA ===\n\n── Números ──\nn = ${s.n}\ne = ${s.e}\n\n── PEM ──\n${pem_pub}\n${bloque_msg}`;
+  const contenido_publico = `=== CLAVE PÚBLICA RSA ===\n\n── PEM ──\n${pem_pub}\n${bloque_msg}`;
   const contenido_privado = `=== CLAVES RSA COMPLETAS ===\n\n── Números ──\np = ${s.p}\nq = ${s.q}\nn = ${s.n}\nφ(n) = ${s.phi}\ne = ${s.e}\nd = ${s.d}\n\n── PEM clave pública ──\n${pem_pub}\n\n── PEM clave privada ──\n${pem_priv}\n${bloque_msg}`;
 
   print();
