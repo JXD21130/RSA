@@ -1611,12 +1611,28 @@ async function runProgram() {
   }
 }
 
-// Focus: solo redirigir al terminal si el clic NO es en el editor ni en el modal
-document.addEventListener('click', e => {
-  const editorArea = document.getElementById('editor-area');
-  const modalTa = document.getElementById('modal-textarea');
+// Focus: el editor y el modal textarea gestionan su propio foco.
+// Para todo lo demás, mousedown en zonas no interactivas devuelve foco a la terminal.
+const FOCUS_WHITELIST = ['editor-area', 'modal-textarea', 'cmd-input',
+  'editor-save-btn', 'tb-btn', 'file-btn', 'fp-action', 'modal-btn'];
+
+document.addEventListener('mousedown', e => {
   const modal = document.getElementById('modal');
-  if (e.target === editorArea || e.target === modalTa || modal.classList.contains('show')) return;
+  if (modal.classList.contains('show')) return;
+  // Si el target es el editor o el modal-textarea, dejar que actúe normalmente
+  if (e.target.id === 'editor-area' || e.target.id === 'modal-textarea') return;
+  // Si el activeElement ya es el editor, cualquier clic fuera lo saca — no hacer nada,
+  // el editor perderá foco solo; mejor mantenerlo si el clic fue fuera de áreas interactivas
+  // Solo redirigir a cmd-input si no es un input/textarea/button
+  const tag = e.target.tagName.toLowerCase();
+  if (tag === 'textarea' || tag === 'input' || tag === 'button' || tag === 'select') return;
+  // Prevenir que el clic en zonas muertas quite el foco al editor
+  const active = document.activeElement;
+  if (active && active.id === 'editor-area') {
+    e.preventDefault();
+    return;
+  }
+  // En el resto de casos, llevar foco a la terminal
   cmdInput.focus();
 });
 cmdInput.focus();
