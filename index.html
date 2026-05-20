@@ -1611,8 +1611,14 @@ async function runProgram() {
   }
 }
 
-// Focus
-document.addEventListener('click', () => cmdInput.focus());
+// Focus: solo redirigir al terminal si el clic NO es en el editor ni en el modal
+document.addEventListener('click', e => {
+  const editorArea = document.getElementById('editor-area');
+  const modalTa = document.getElementById('modal-textarea');
+  const modal = document.getElementById('modal');
+  if (e.target === editorArea || e.target === modalTa || modal.classList.contains('show')) return;
+  cmdInput.focus();
+});
 cmdInput.focus();
 renderFileList();
 runProgram();
