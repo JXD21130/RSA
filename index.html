@@ -1536,17 +1536,43 @@ async function menuPEMUniversal() {
 async function showMainMenu() {
   printBlank();
   printSep();
-  print('1  números — cifrar/descifrar', 'muted');
-  print('2  letras  — cifrar/descifrar', 'muted');
-  print('3  generar claves RSA', 'muted');
-  print('4  cifrar desde TXT', 'muted');
-  print('5  descifrar desde TXT', 'muted');
-  print('6  firma digital', 'muted');
-  print('7  verificar firma', 'muted');
-  print('8  seeds', 'muted');
-  print('9  PEM universal', 'muted');
-  print('10 mostrar abecedario', 'muted');
+  print('1  números', 'muted');
+  print('2  letras', 'muted');
+  print('3  modo avanzado', 'muted');
   printSep();
+}
+
+async function menuModoAvanzado() {
+  printBlank();
+  printSep();
+  print('1  generar claves', 'muted');
+  print('2  seeds', 'muted');
+  print('3  cifrar/descifrar desde TXT', 'muted');
+  print('4  firma digital', 'muted');
+  print('5  PEM universal', 'muted');
+  printSep();
+  const op = (await askInput('')).trim();
+
+  if (op === '1') await generarClaves().catch(e => print(`✗ ${e}`, 'error'));
+  else if (op === '2') await menuSeeds().catch(e => print(`✗ ${e}`, 'error'));
+  else if (op === '3') {
+    printBlank();
+    print('1  cifrar desde TXT', 'muted');
+    print('2  descifrar desde TXT', 'muted');
+    const sub = (await askInput('')).trim();
+    if (sub === '1') await cifrarDesdeTxt().catch(e => print(`✗ ${e}`, 'error'));
+    else if (sub === '2') await descifrarDesdeTxt().catch(e => print(`✗ ${e}`, 'error'));
+    else print('opción inválida', 'error');
+  } else if (op === '4') {
+    printBlank();
+    print('1  firmar mensaje', 'muted');
+    print('2  verificar firma', 'muted');
+    const sub = (await askInput('')).trim();
+    if (sub === '1') await firmarMensaje().catch(e => print(`✗ ${e}`, 'error'));
+    else if (sub === '2') await verificarFirma().catch(e => print(`✗ ${e}`, 'error'));
+    else print('opción inválida', 'error');
+  } else if (op === '5') await menuPEMUniversal().catch(e => print(`✗ ${e}`, 'error'));
+  else print('opción inválida', 'error');
 }
 
 let running = false;
@@ -1560,30 +1586,28 @@ async function runProgram() {
     const op = (await askInput('')).trim();
 
     if (op === '1') {
-      print('1 → cifrar', 'muted'); print('2 → descifrar', 'muted');
+      printBlank();
+      print('1  cifrar', 'muted'); print('2  descifrar', 'muted');
       const sub = (await askInput('')).trim();
       if (sub === '1') await cifrarNumero().catch(e => print(`✗ ${e}`, 'error'));
       else if (sub === '2') await descifrarNumero().catch(e => print(`✗ ${e}`, 'error'));
+      else print('opción inválida', 'error');
 
     } else if (op === '2') {
       const seed = await pedirSeed('seed (vacío = normal, "random" = aleatoria):');
       if (seed) applyAbc(genAbcWithSeed(seed));
       printBlank(); mostrarAbecedario(); printBlank();
-      print('1 → cifrar', 'muted'); print('2 → descifrar', 'muted');
+      print('1  cifrar', 'muted'); print('2  descifrar', 'muted');
       const sub = (await askInput('')).trim();
       if (sub === '1') await cifrarTexto().catch(e => print(`✗ ${e}`, 'error'));
       else if (sub === '2') await descifrarTexto().catch(e => print(`✗ ${e}`, 'error'));
+      else print('opción inválida', 'error');
       resetAbc();
 
-    } else if (op === '3') await generarClaves().catch(e => print(`✗ ${e}`, 'error'));
-    else if (op === '4') await cifrarDesdeTxt().catch(e => print(`✗ ${e}`, 'error'));
-    else if (op === '5') await descifrarDesdeTxt().catch(e => print(`✗ ${e}`, 'error'));
-    else if (op === '6') await firmarMensaje().catch(e => print(`✗ ${e}`, 'error'));
-    else if (op === '7') await verificarFirma().catch(e => print(`✗ ${e}`, 'error'));
-    else if (op === '8') await menuSeeds().catch(e => print(`✗ ${e}`, 'error'));
-    else if (op === '9') await menuPEMUniversal().catch(e => print(`✗ ${e}`, 'error'));
-    else if (op === '10') { printBlank(); mostrarAbecedario(); }
-    else { print('opción inválida', 'error'); }
+    } else if (op === '3') {
+      await menuModoAvanzado();
+
+    } else { print('opción inválida', 'error'); }
   }
 }
 
