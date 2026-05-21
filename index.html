@@ -1263,22 +1263,15 @@ async function generarClaves() {
     const textoMsg = await askInput('texto a cifrar:');
     const numsMsg = textoANumeros(textoMsg);
     cifradosMsg = numsMsg.map(v => {
-      if (v === MARCADOR_DIGITO) return -modPow(1n, exp, n);
-      if (v === 0) return 0n;
-      return modPow(BigInt(v), exp, n);
-    });
-    // recompute properly
-    const cifradosMsgFix = numsMsg.map(v => {
       if (v === MARCADOR_DIGITO) return -modPow(BigInt(Math.abs(MARCADOR_DIGITO)), exp, n);
       if (v === 0) return 0n;
       return modPow(BigInt(v), exp, n);
     });
-    pemMsg = numsToPEM(cifradosMsgFix);
+    pemMsg = genCipherPEM(cifradosMsg, n, e, null, modoCifrado, seedUsada);
     msgOrig = textoMsg;
-    cifradosMsg = cifradosMsgFix;
 
     printBlank();
-    print(cifradosMsgFix.map(x => x.toString()).join(' '), 'success');
+    print(cifradosMsg.map(x => x.toString()).join(' '), 'success');
     printBlank();
     printPEM(pemMsg);
     printBlank();
