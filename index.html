@@ -431,6 +431,22 @@ function modInverse(a, m) {
   return ((old_s % m) + m) % m;
 }
 
+function randomBigIntBelow(max) {
+  // Returns a random BigInt in [0, max) using rejection sampling
+  const bits = max.toString(2).length;
+  while (true) {
+    const bytes = Math.ceil(bits / 8);
+    const arr = new Uint8Array(bytes);
+    crypto.getRandomValues(arr);
+    // mask top bits so we don't overshoot too often
+    const mask = (1 << (bits % 8 || 8)) - 1;
+    arr[0] &= mask;
+    let n = 0n;
+    for (const b of arr) n = (n << 8n) | BigInt(b);
+    if (n < max) return n;
+  }
+}
+
 function millerRabin(n, k = 20) {
   if (n < 2n) return false;
   if (n === 2n || n === 3n) return true;
@@ -438,7 +454,8 @@ function millerRabin(n, k = 20) {
   let r = 0n, d = n - 1n;
   while (d % 2n === 0n) { r++; d /= 2n; }
   for (let i = 0; i < k; i++) {
-    const a = 2n + BigInt(Math.floor(Math.random() * Number(n - 4n)));
+    // safe random witness for any size n
+    const a = 2n + randomBigIntBelow(n - 4n);
     let x = modPow(a, d, n);
     if (x === 1n || x === n - 1n) continue;
     let cont = false;
@@ -477,8 +494,9 @@ function gcd(a, b) {
 }
 
 function digitsToN(digits) {
-  // rough bits from digit count
-  return Math.ceil(digits * Math.log2(10));
+  // bits = ceil(digits * log2(10)) = ceil(digits * 3.32193)
+  // Use integer arithmetic to avoid Infinity for large digit counts
+  return Math.ceil(digits * 3.32193);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1203,6 +1221,9 @@ async function generarClaves() {
 
   const bitsN = digitsToN(cifrasN);
   const bitsPrimo = Math.max(Math.floor(bitsN / 2), 8);
+  if (bitsPrimo > 2048) {
+    print(`advertencia: ${cifrasN} dígitos → ${bitsN} bits, puede tardar varios minutos`, 'info');
+  }
   print('generando primos...', 'muted');
 
   let p = randomPrime(bitsPrimo);
