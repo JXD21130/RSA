@@ -692,20 +692,7 @@ function parsePrivKeyPEM(pem) {
 }
 
 // Encrypted message PEM
-function numsToPEM(nums) {
-  const parts = [];
-  for (const num of nums) {
-    const isNeg = num < 0n;
-    const abs = isNeg ? -num : num;
-    const nb = bigIntToBytes(abs);
-    const sign = new Uint8Array([isNeg ? 1 : 0]);
-    const lenBytes = new Uint8Array(4);
-    new DataView(lenBytes.buffer).setUint32(0, nb.length, false);
-    parts.push(sign, lenBytes, nb);
-  }
-  return wrapPEM('RSA ENCRYPTED MESSAGE', concat(parts));
-}
-
+// (compatibilidad interna — los nuevos archivos usan RSA CIPHER)
 function pemToNums(pem) {
   const data = stripPEM(pem);
   const nums = [];
@@ -721,7 +708,14 @@ function pemToNums(pem) {
   return nums;
 }
 
-// MPI format (for sign)
+// ═══════════════════════════════════════════════════════
+//  NUEVO SISTEMA PEM UNIFICADO
+//  RSA PUBLIC KEY   → DER(n, e)
+//  RSA PRIVATE KEY  → DER(0, n, e, d, p, q, dp, dq, qInv)
+//  RSA CIPHER       → MPI(n) + MPI(e) [+ MPI(d) si cifrado con d] + mensaje_raw
+//  RSA SIGN         → MPI(firma) + MPI(n) + MPI(e)
+// ═══════════════════════════════════════════════════════
+
 function encodeMPI(n) {
   const b = bigIntToBytes(n);
   const hdr = new Uint8Array(2);
@@ -737,27 +731,85 @@ function decodeMPI(data, off) {
   return { value: val, next: off + len };
 }
 
-function genSignPEM(firma) { return wrapPEM('RSA SIGN', bigIntToBytes(firma)); }
+// RSA SIGN: MPI(firma) + MPI(n) + MPI(e)
+function genSignPEM(firma, n, e) {
+  return wrapPEM('RSA SIGN', concat([encodeMPI(firma), encodeMPI(n), encodeMPI(e)]));
+}
 function parseSignPEM(pem) {
-  const data = stripPEM(pem);
-  let n = 0n; for (const b of data) n = (n << 8n) | BigInt(b); return n;
-}
-function genPublicKeysMPI(n, e) { return wrapPEM('PUBLIC KEYS', concat([encodeMPI(n), encodeMPI(e)])); }
-function parsePublicKeysMPI(pem) {
-  const data = stripPEM(pem);
-  const nR = decodeMPI(data, 0);
-  const eR = decodeMPI(data, nR.next);
-  return { n: nR.value, e: eR.value };
-}
-function genSignAndPubKeysPEM(firma, n, e) {
-  return wrapPEM('RSA SIGN AND PUBLIC KEYS', concat([encodeMPI(firma), encodeMPI(n), encodeMPI(e)]));
-}
-function parseSignAndPubKeysPEM(pem) {
   const data = stripPEM(pem);
   const fR = decodeMPI(data, 0);
   const nR = decodeMPI(data, fR.next);
   const eR = decodeMPI(data, nR.next);
   return { firma: fR.value, n: nR.value, e: eR.value };
+}
+
+// RSA CIPHER: 1 byte modo (0=e,1=d) + MPI(n) + MPI(e) [+ MPI(d) si modo=1] + raw_mensaje
+function genCipherPEM(nums, n, e, d_val, modoCifrado, seed) {
+  // Formato: 1B(modo) + MPI(n) + MPI(e) [+MPI(d)] + 2B(seedLen) + seedBytes + msg_raw
+  // modo: 0 = cifrado con e, 1 = cifrado con d
+  const modo = modoCifrado === 'd' ? 1 : 0;
+  const modoByte = new Uint8Array([modo]);
+  // Solo n y e — d nunca se incluye (si se cifró con d, se descifra con e que es pública)
+  let clavesPart = concat([encodeMPI(n), encodeMPI(e)]);
+  // seed como UTF-8 con prefijo 2B de longitud
+  const seedStr = seed || '';
+  const seedBytes = new TextEncoder().encode(seedStr);
+  const seedLen = new Uint8Array(2);
+  new DataView(seedLen.buffer).setUint16(0, seedBytes.length, false);
+  const seedPart = concat([seedLen, seedBytes]);
+  // mensaje raw
+  const parts = [];
+  for (const num of nums) {
+    const isNeg = num < 0n;
+    const abs = isNeg ? -num : num;
+    const nb = bigIntToBytes(abs);
+    const sign = new Uint8Array([isNeg ? 1 : 0]);
+    const lenBytes = new Uint8Array(4);
+    new DataView(lenBytes.buffer).setUint32(0, nb.length, false);
+    parts.push(sign, lenBytes, nb);
+  }
+  const msgPart = concat(parts);
+  return wrapPEM('RSA CIPHER', concat([modoByte, clavesPart, seedPart, msgPart]));
+}
+
+function parseCipherPEM(pem) {
+  const data = stripPEM(pem);
+  let off = 0;
+  const modo = data[off++]; // 0=e, 1=d
+  const nR = decodeMPI(data, off); off = nR.next;
+  const eR = decodeMPI(data, off); off = eR.next;
+  // d nunca se incluye en el PEM
+  // seed
+  const seedLen = new DataView(data.buffer, data.byteOffset + off, 2).getUint16(0, false); off += 2;
+  const seedBytes = data.slice(off, off + seedLen); off += seedLen;
+  const seed = new TextDecoder().decode(seedBytes);
+  // parse nums
+  const nums = [];
+  while (off < data.length) {
+    const sign = data[off++];
+    const len = new DataView(data.buffer, data.byteOffset + off, 4).getUint32(0, false); off += 4;
+    const nb = data.slice(off, off + len); off += len;
+    let val = 0n; for (const b of nb) val = (val << 8n) | BigInt(b);
+    nums.push(sign === 1 ? -val : val);
+  }
+  return { n: nR.value, e: eR.value, modo: modo === 1 ? 'd' : 'e', seed, nums };
+}
+
+// Detectar tipo de PEM por etiqueta
+function detectarTipoPEM(content) {
+  const labels = ['RSA PUBLIC KEY','RSA PRIVATE KEY','RSA CIPHER','RSA SIGN'];
+  for (const label of labels) {
+    if (content.includes(`-----BEGIN ${label}-----`)) return label;
+  }
+  return null;
+}
+
+function extraerPEM(content, label) {
+  const start = content.indexOf(`-----BEGIN ${label}-----`);
+  const endTag = `-----END ${label}-----`;
+  const end = content.indexOf(endTag);
+  if (start === -1 || end === -1) return null;
+  return content.slice(start, end + endTag.length);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -888,68 +940,64 @@ function listFiles() {
 }
 
 // ═══════════════════════════════════════════════════════
-//  DETECT KEYS / MESSAGE IN TXT
+//  DETECT PEM IN TXT — nuevo sistema unificado
 // ═══════════════════════════════════════════════════════
 
-function detectKeysInTxt(content) {
-  const claves = {};
-  const patterns = {
-    n: /n\s*=\s*(\d+)/,
-    e: /e\s*=\s*(\d+)/,
-    d: /d\s*=\s*(\d+)/,
-    p: /p\s*=\s*(\d+)/,
-    q: /q\s*=\s*(\d+)/,
-    phi: /φ\(n\)\s*=\s*(\d+)/,
-  };
-  for (const [k, re] of Object.entries(patterns)) {
-    const m = content.match(re);
-    if (m) claves[k] = BigInt(m[1]);
-  }
-  const mSeed = content.match(/Seed\s*:\s*(.+)/);
-  if (mSeed) claves.seed = mSeed[1].trim();
-  const mModo = content.match(/[Cc]ifrado con\s*:\s*([ed])/i);
-  if (mModo) claves.modo_cifrado = mModo[1].toLowerCase();
+function parsearTxtUnificado(content) {
+  // Intenta detectar cualquiera de los 4 tipos de PEM
+  const resultado = { tipo: null };
 
-  // PEM public
-  if (content.includes('-----BEGIN RSA PUBLIC KEY-----')) {
+  // RSA CIPHER (prioridad: contiene claves + mensaje)
+  if (content.includes('-----BEGIN RSA CIPHER-----')) {
     try {
-      const start = content.indexOf('-----BEGIN RSA PUBLIC KEY-----');
-      const end = content.indexOf('-----END RSA PUBLIC KEY-----') + '-----END RSA PUBLIC KEY-----'.length;
-      const pem = content.slice(start, end);
-      const { n, e } = parsePubKeyPEM(pem);
-      claves.n = n; claves.e = e; claves.pem_publica = pem;
-    } catch(ex){}
+      const pem = extraerPEM(content, 'RSA CIPHER');
+      if (pem) {
+        const parsed = parseCipherPEM(pem);
+        return { tipo: 'RSA CIPHER', ...parsed, pem };
+      }
+    } catch(ex) {}
   }
-  // PEM private
+  // RSA PRIVATE KEY
   if (content.includes('-----BEGIN RSA PRIVATE KEY-----')) {
     try {
-      const start = content.indexOf('-----BEGIN RSA PRIVATE KEY-----');
-      const end = content.indexOf('-----END RSA PRIVATE KEY-----') + '-----END RSA PRIVATE KEY-----'.length;
-      const pem = content.slice(start, end);
-      const { n, e, d, p, q } = parsePrivKeyPEM(pem);
-      claves.n = n; claves.e = e; claves.d = d; claves.p = p; claves.q = q; claves.pem_privada = pem;
-    } catch(ex){}
+      const pem = extraerPEM(content, 'RSA PRIVATE KEY');
+      if (pem) {
+        const { n, e, d, p, q } = parsePrivKeyPEM(pem);
+        return { tipo: 'RSA PRIVATE KEY', n, e, d, p, q, pem };
+      }
+    } catch(ex) {}
   }
-  return claves;
+  // RSA PUBLIC KEY
+  if (content.includes('-----BEGIN RSA PUBLIC KEY-----')) {
+    try {
+      const pem = extraerPEM(content, 'RSA PUBLIC KEY');
+      if (pem) {
+        const { n, e } = parsePubKeyPEM(pem);
+        return { tipo: 'RSA PUBLIC KEY', n, e, pem };
+      }
+    } catch(ex) {}
+  }
+  // RSA SIGN
+  if (content.includes('-----BEGIN RSA SIGN-----')) {
+    try {
+      const pem = extraerPEM(content, 'RSA SIGN');
+      if (pem) {
+        const { firma, n, e } = parseSignPEM(pem);
+        return { tipo: 'RSA SIGN', firma, n, e, pem };
+      }
+    } catch(ex) {}
+  }
+  // seed en texto plano (legacy)
+  const mSeed = content.match(/Seed\s*:\s*(.+)/);
+  if (mSeed) resultado.seed = mSeed[1].trim();
+  return resultado;
 }
 
+// Alias legacy para compatibilidad con descifrarDesdeTxt
+function detectKeysInTxt(content) { return parsearTxtUnificado(content); }
 function detectMessageInTxt(content) {
-  if (content.includes('-----BEGIN RSA ENCRYPTED MESSAGE-----')) {
-    const start = content.indexOf('-----BEGIN RSA ENCRYPTED MESSAGE-----');
-    const end = content.indexOf('-----END RSA ENCRYPTED MESSAGE-----') + '-----END RSA ENCRYPTED MESSAGE-----'.length;
-    if (end > start) return { tipo: 'pem_mensaje', datos: content.slice(start, end) };
-  }
-  for (const line of content.split('\n')) {
-    const l = line.trim();
-    if (!l || l.startsWith('─') || l.startsWith('=') || l.includes(':')) continue;
-    const parts = l.split(/\s+/);
-    if (parts.length >= 2) {
-      try {
-        const nums = parts.map(p => BigInt(p));
-        if (nums.some(n => n < -100n || n > 100n)) return { tipo: 'numeros', datos: nums };
-      } catch(e) {}
-    }
-  }
+  const r = parsearTxtUnificado(content);
+  if (r.tipo === 'RSA CIPHER') return { tipo: 'pem_cipher', datos: r };
   return { tipo: null, datos: null };
 }
 
@@ -1236,22 +1284,20 @@ async function generarClaves() {
     printBlank();
   }
 
-  // save files
-  const seedTxt = seedUsada || '(normal)';
-  const modoTxt = modoCifrado === 'e' ? 'e (clave pública)' : modoCifrado === 'd' ? 'd (clave privada)' : '';
-  let bloqueMsg = '';
-  if (msgOrig !== null) {
-    bloqueMsg = `\n── Mensaje cifrado ──\nMensaje original: ${msgOrig}\nSeed            : ${seedTxt}\nCifrado con     : ${modoTxt}\nNúmeros         : ${cifradosMsg.map(x=>x.toString()).join(' ')}\n\n${pemMsg}\n`;
-  }
-  const pubContent = `=== CLAVE PÚBLICA RSA ===\n\n── Números ──\nn = ${n}\ne = ${e}\n\n── PEM ──\n${pemPub}\n${bloqueMsg}`;
-  const privContent = `=== CLAVES RSA COMPLETAS ===\n\n── Números ──\np = ${p}\nq = ${q}\nn = ${n}\nφ(n) = ${phi}\ne = ${e}\nd = ${d}\n\n── PEM clave pública ──\n${pemPub}\n\n── PEM clave privada ──\n${pemPriv}\n${bloqueMsg}`;
-
-  writeFile('clave_publica.txt', pubContent);
-  writeFile('claves_completas.txt', privContent);
+  // ── Guardar archivos con nuevo formato (un único PEM por archivo) ──
+  writeFile('clave_publica.txt', pemPub);
+  writeFile('clave_privada.txt', pemPriv);
   printBlank();
   print('✓ clave_publica.txt', 'success');
-  print('✓ claves_completas.txt', 'success');
-  if (msgOrig) { print('✓ mensaje incluido en los ficheros', 'success'); }
+  print('✓ clave_privada.txt', 'success');
+
+  if (msgOrig !== null) {
+    const pemCipher = genCipherPEM(cifradosMsg, n, e, null, modoCifrado, seedUsada);
+    writeFile('mensaje_cifrado.txt', pemCipher);
+    printBlank();
+    printPEM(pemCipher);
+    print('✓ mensaje_cifrado.txt', 'success');
+  }
   resetAbc();
 }
 
@@ -1299,20 +1345,16 @@ async function cifrarDesdeTxt() {
     if (v === 0) return 0n;
     return modPow(BigInt(v), exp, n);
   });
-  const pemMsg = numsToPEM(cifrados);
-  const pemPub = genPubKeyPEM(n, e);
+  const pemCipher = genCipherPEM(cifrados, n, e, null, modoCifrado, seedUsada);
 
   printBlank();
-  print(cifrados.map(x=>x.toString()).join(' '), 'success');
-  printBlank();
-  printPEM(pemMsg);
+  printPEM(pemCipher);
 
   const guardar = (await askInput('\n¿guardar en archivo? (y/n):')).trim().toLowerCase();
   if (['y','si','s',''].includes(guardar)) {
-    let nombreSal = (await askInput('nombre del archivo de salida (Enter = mensaje_cifrado.txt):')).trim();
+    let nombreSal = (await askInput('nombre (Enter = mensaje_cifrado.txt):')).trim();
     if (!nombreSal) nombreSal = 'mensaje_cifrado.txt';
-    const contenido = `=== MENSAJE CIFRADO RSA ===\n\nSeed            : ${seedUsada || '(normal)'}\nCifrado con     : ${modoCifrado === 'e' ? 'e (debes descifrar con d)' : 'd (debes descifrar con e)'}\n── PEM MENSAJE ──\n${pemMsg}\n\n── PEM CLAVE PÚBLICA ──\n${pemPub}\n`;
-    writeFile(nombreSal, contenido);
+    writeFile(nombreSal, pemCipher);
     print(`✓ guardado: ${nombreSal}`, 'success');
   }
   resetAbc();
@@ -1324,79 +1366,80 @@ async function descifrarDesdeTxt() {
   const content = readFile(nombre);
   if (content === null) { print(`✗ no encontrado: ${nombre}`, 'error'); return; }
 
-  const claves = detectKeysInTxt(content);
-  const { tipo, datos } = detectMessageInTxt(content);
+  const parsed = parsearTxtUnificado(content);
 
-  if (Object.keys(claves).length) {
-    print('claves detectadas:', 'label');
-    for (const [k, v] of Object.entries(claves)) {
-      if (!['pem_publica','pem_privada'].includes(k)) print(`  ${k} = ${v}`, 'muted');
-    }
-  }
-
-  let cifrados;
-  if (tipo === 'pem_mensaje') {
-    print('✓ mensaje PEM detectado', 'success');
-    try { cifrados = pemToNums(datos); print(`  ${cifrados.length} elementos`, 'muted'); } catch(ex) { print(`✗ error PEM: ${ex}`, 'error'); return; }
-  } else if (tipo === 'numeros') {
-    print('✓ números cifrados detectados', 'success');
-    cifrados = datos;
-  } else {
-    print('no se detectó mensaje. Elige:', 'muted');
-    print('1 → introducir números manualmente', 'muted'); print('2 → pegar PEM', 'muted');
-    const op = (await askInput('')).trim();
-    if (op === '1') {
-      const en = (await askInput('números separados por espacios:')).trim();
-      try { cifrados = en.split(/\s+/).map(s => BigInt(s)); } catch(e) { print('✗ error', 'error'); return; }
-    } else if (op === '2') {
-      const pem = await leerPEM();
-      try { cifrados = pemToNums(pem); } catch(ex) { print(`✗ error: ${ex}`, 'error'); return; }
-    } else { print('inválido', 'error'); return; }
-  }
-
-  let n;
-  if (claves.n) {
-    const usar = (await askInput(`¿usar n=${claves.n}? (y/n):`)).trim().toLowerCase();
-    n = ['y','si','s',''].includes(usar) ? claves.n : BigInt((await askInput('n:')).trim());
-  } else n = BigInt((await askInput('n:')).trim());
-
-  const modoDetectado = claves.modo_cifrado;
-  let exp;
-  if (modoDetectado === 'e') {
-    print('✓ cifrado con e → descifrar con d', 'info');
-    if (claves.d) { print(`✓ usando d del archivo`, 'success'); exp = claves.d; }
-    else exp = BigInt((await askInput('d:')).trim());
-  } else if (modoDetectado === 'd') {
-    print('✓ cifrado con d → descifrar con e', 'info');
-    if (claves.e) { print(`✓ usando e del archivo`, 'success'); exp = claves.e; }
-    else exp = BigInt((await askInput('e:')).trim());
-  } else {
-    print('modo no detectado. El mensaje fue cifrado con:', 'muted');
-    print('1 → e (descifrar con d)', 'muted'); print('2 → d (descifrar con e)', 'muted');
-    const modo = (await askInput('')).trim();
-    if (modo === '1' || !modo) {
-      if (claves.d) { const u = (await askInput(`¿usar d=${claves.d}? (y/n):`)).trim().toLowerCase(); exp = ['y','si','s',''].includes(u) ? claves.d : BigInt((await askInput('d:')).trim()); }
-      else exp = BigInt((await askInput('d:')).trim());
+  if (parsed.tipo === 'RSA CIPHER') {
+    print(`✓ RSA CIPHER detectado (cifrado con ${parsed.modo})`, 'success');
+    print(`  n = ${parsed.n}`, 'muted');
+    print(`  e = ${parsed.e}`, 'muted');
+    if (parsed.seed) print(`  seed: ${parsed.seed}`, 'muted');
+    const { n, e, modo, nums } = parsed;
+    // Determinar exponente de descifrado
+    let exp;
+    if (modo === 'e') {
+      print('cifrado con e → necesito d para descifrar', 'info');
+      exp = BigInt((await askInput('d:')).trim());
     } else {
-      if (claves.e) { const u = (await askInput(`¿usar e=${claves.e}? (y/n):`)).trim().toLowerCase(); exp = ['y','si','s',''].includes(u) ? claves.e : BigInt((await askInput('e:')).trim()); }
-      else exp = BigInt((await askInput('e:')).trim());
+      print('cifrado con d → descifrar con e (clave pública)', 'info');
+      exp = e;
     }
+    // Seed: usar la del PEM si existe, preguntar si no
+    let seedUsada;
+    if (parsed.seed) {
+      print(`✓ seed "${parsed.seed}" leída del PEM`, 'success');
+      const usar = (await askInput('¿usar esta seed? (y/n):')).trim().toLowerCase();
+      seedUsada = ['y','si','s',''].includes(usar) ? parsed.seed : await pedirSeed();
+    } else {
+      seedUsada = await pedirSeed();
+    }
+    if (seedUsada) applyAbc(genAbcWithSeed(seedUsada));
+    const descifrados = nums.map(c => {
+      if (c < 0n) return MARCADOR_DIGITO;
+      if (c === 0n) return 0;
+      return Number(modPow(c, exp, n));
+    });
+    printBlank();
+    print(numerosATexto(descifrados), 'success');
+    printBlank();
+    resetAbc();
+    return;
   }
 
-  let seedUsada;
-  if (claves.seed && claves.seed !== '(normal)') {
-    const us = (await askInput(`¿usar seed "${claves.seed}"? (y/n):`)).trim().toLowerCase();
-    seedUsada = ['y','si','s',''].includes(us) ? claves.seed : await pedirSeed();
-  } else seedUsada = await pedirSeed();
+  // Fallback: pedir datos manualmente
+  print('no se detectó RSA CIPHER en el archivo', 'muted');
+  print('1 → introducir números manualmente', 'muted');
+  print('2 → pegar PEM RSA CIPHER', 'muted');
+  const op = (await askInput('')).trim();
+  let cifrados, n, exp;
+  if (op === '1') {
+    const en = (await askInput('números separados por espacios:')).trim();
+    cifrados = en.split(/\s+/).map(s => BigInt(s));
+    n = BigInt((await askInput('n:')).trim());
+    print('1 → cifrado con e (descifrar con d)', 'muted');
+    print('2 → cifrado con d (descifrar con e)', 'muted');
+    const modo = (await askInput('')).trim();
+    if (modo === '2') exp = BigInt((await askInput('e:')).trim());
+    else exp = BigInt((await askInput('d:')).trim());
+  } else if (op === '2') {
+    const pem = await leerPEM();
+    try {
+      const parsed2 = parseCipherPEM(pem);
+      n = parsed2.n; cifrados = parsed2.nums;
+      if (parsed2.modo === 'e') {
+        exp = parsed2.d ?? BigInt((await askInput('d:')).trim());
+      } else {
+        exp = parsed2.e;
+      }
+    } catch(ex) { print(`✗ error: ${ex}`, 'error'); return; }
+  } else { print('inválido', 'error'); return; }
 
+  const seedUsada = await pedirSeed();
   if (seedUsada) applyAbc(genAbcWithSeed(seedUsada));
-
   const descifrados = cifrados.map(c => {
     if (c < 0n) return MARCADOR_DIGITO;
     if (c === 0n) return 0;
     return Number(modPow(c, exp, n));
   });
-
   printBlank();
   print(numerosATexto(descifrados), 'success');
   printBlank();
@@ -1413,25 +1456,53 @@ async function firmarMensaje() {
   const firma = modPow(hashBig, dVal, n);
   printBlank();
   print(`firma: ${firma}`, 'success');
+  // RSA SIGN: MPI(firma) + MPI(n) + MPI(e)
+  const pemFirma = genSignPEM(firma, n, e);
   printBlank();
-  const pemFirma = genSignPEM(firma);
-  const pemPubKeys = genPublicKeysMPI(n, e);
-  const pemSAP = genSignAndPubKeysPEM(firma, n, e);
   printPEM(pemFirma);
-  printBlank();
-  printPEM(pemPubKeys);
-  printBlank();
-  printPEM(pemSAP);
+
+  const guardar = (await askInput('¿guardar firma en archivo? (y/n):')).trim().toLowerCase();
+  if (['y','si','s',''].includes(guardar)) {
+    let nombreSal = (await askInput('nombre (Enter = firma.txt):')).trim();
+    if (!nombreSal) nombreSal = 'firma.txt';
+    writeFile(nombreSal, pemFirma);
+    print(`✓ guardado: ${nombreSal}`, 'success');
+  }
 }
 
 async function verificarFirma() {
   printSep();
   const mensaje = await askInput('mensaje:');
-  const firmaStr = await askInput('firma (entero):');
-  const firma = BigInt(firmaStr.trim());
-  const nStr = await askInput('n:');
-  const eStr = await askInput('e:');
-  const n = BigInt(nStr.trim()), e = BigInt(eStr.trim());
+  print('1 → introducir firma manualmente', 'muted');
+  print('2 → cargar desde archivo .txt', 'muted');
+  print('3 → pegar PEM RSA SIGN', 'muted');
+  const op = (await askInput('')).trim();
+  let firma, n, e;
+
+  if (op === '2') {
+    const nombre = (await askInput('nombre del archivo:')).trim();
+    const content = readFile(nombre);
+    if (!content) { print('✗ no encontrado', 'error'); return; }
+    try {
+      const pem = extraerPEM(content, 'RSA SIGN');
+      if (!pem) throw new Error('no hay RSA SIGN en el archivo');
+      const parsed = parseSignPEM(pem);
+      firma = parsed.firma; n = parsed.n; e = parsed.e;
+      print(`✓ firma, n y e leídos del archivo`, 'success');
+    } catch(ex) { print(`✗ error: ${ex}`, 'error'); return; }
+  } else if (op === '3') {
+    const pem = await leerPEM();
+    try {
+      const parsed = parseSignPEM(pem);
+      firma = parsed.firma; n = parsed.n; e = parsed.e;
+      print(`✓ firma, n y e leídos del PEM`, 'success');
+    } catch(ex) { print(`✗ error: ${ex}`, 'error'); return; }
+  } else {
+    firma = BigInt((await askInput('firma (entero):')).trim());
+    n = BigInt((await askInput('n:')).trim());
+    e = BigInt((await askInput('e:')).trim());
+  }
+
   const hashBig = await sha256BigInt(mensaje);
   const hashMod = hashBig % n;
   const resultado = modPow(firma, e, n);
@@ -1474,32 +1545,63 @@ async function menuSeeds() {
 }
 
 // PEM Universal
+function decodificarPEM(pem) {
+  const mLabel = pem.match(/-----BEGIN ([A-Z0-9 ]+)-----/);
+  if (!mLabel) { print('✗ cabecera PEM inválida', 'error'); return; }
+  const label = mLabel[1].trim();
+  printBlank(); print(`tipo: ${label}`, 'label'); printSep();
+  try {
+    if (label === 'RSA PUBLIC KEY') {
+      const { n, e } = parsePubKeyPEM(pem);
+      print(`n = ${n}`, 'label'); print(`e = ${e}`, 'label');
+    } else if (label === 'RSA PRIVATE KEY') {
+      const { n, e, d, p, q } = parsePrivKeyPEM(pem);
+      print(`n = ${n}`, 'label'); print(`e = ${e}`, 'label'); print(`d = ${d}`, 'label');
+      print(`p = ${p}`, 'label'); print(`q = ${q}`, 'label');
+    } else if (label === 'RSA CIPHER') {
+      const { n, e, modo, seed, nums } = parseCipherPEM(pem);
+      print(`cifrado con: ${modo}`, 'label');
+      print(`n = ${n}`, 'label'); print(`e = ${e}`, 'label');
+      print(`seed: ${seed || '(normal)'}`, 'label');
+      print(`${nums.length} valores cifrados:`, 'muted');
+      print(nums.map(x=>x.toString()).join(' '), 'success');
+    } else if (label === 'RSA SIGN') {
+      const { firma, n, e } = parseSignPEM(pem);
+      print(`firma = ${firma}`, 'label'); print(`n = ${n}`, 'label'); print(`e = ${e}`, 'label');
+    } else {
+      print(`✗ tipo no reconocido: ${label}`, 'error');
+      print('tipos soportados: RSA PUBLIC KEY, RSA PRIVATE KEY, RSA CIPHER, RSA SIGN', 'muted');
+    }
+  } catch(ex) { print(`✗ error: ${ex}`, 'error'); }
+}
+
 async function menuPEMUniversal() {
   printSep();
-  print('1 → decodificar PEM', 'muted');
-  print('2 → codificar PEM', 'muted');
+  print('1 → decodificar (pegar PEM)', 'muted');
+  print('2 → decodificar (cargar desde archivo)', 'muted');
+  print('3 → codificar PEM', 'muted');
   const op = (await askInput('')).trim();
 
   if (op === '1') {
     const pem = await leerPEM();
-    const mLabel = pem.match(/-----BEGIN ([A-Z0-9 ]+)-----/);
-    if (!mLabel) { print('✗ cabecera PEM inválida', 'error'); return; }
-    const label = mLabel[1].trim();
-    printBlank(); print(`tipo: ${label}`, 'label'); printSep();
-    try {
-      if (label === 'RSA PUBLIC KEY') { const { n, e } = parsePubKeyPEM(pem); print(`n = ${n}`, 'label'); print(`e = ${e}`, 'label'); }
-      else if (label === 'RSA PRIVATE KEY') { const { n, e, d, p, q } = parsePrivKeyPEM(pem); print(`n=${n}`, 'label'); print(`e=${e}`, 'label'); print(`d=${d}`, 'label'); print(`p=${p}`, 'label'); print(`q=${q}`, 'label'); }
-      else if (label === 'RSA ENCRYPTED MESSAGE') { const nums = pemToNums(pem); print(`${nums.length} números:`, 'muted'); print(nums.map(x=>x.toString()).join(' '), 'success'); }
-      else if (label === 'RSA SIGN') { print(`firma = ${parseSignPEM(pem)}`, 'label'); }
-      else if (label === 'PUBLIC KEYS') { const { n, e } = parsePublicKeysMPI(pem); print(`n = ${n}`, 'label'); print(`e = ${e}`, 'label'); }
-      else if (label === 'RSA SIGN AND PUBLIC KEYS') { const { firma, n, e } = parseSignAndPubKeysPEM(pem); print(`firma = ${firma}`, 'label'); print(`n = ${n}`, 'label'); print(`e = ${e}`, 'label'); }
-      else print(`✗ tipo no reconocido: ${label}`, 'error');
-    } catch(ex) { print(`✗ error: ${ex}`, 'error'); }
+    decodificarPEM(pem);
 
   } else if (op === '2') {
-    print('1 → RSA PUBLIC KEY', 'muted'); print('2 → RSA PRIVATE KEY', 'muted');
-    print('3 → RSA ENCRYPTED MESSAGE', 'muted'); print('4 → RSA SIGN', 'muted');
-    print('5 → PUBLIC KEYS', 'muted'); print('6 → RSA SIGN AND PUBLIC KEYS', 'muted');
+    const nombre = (await askInput('nombre del archivo:')).trim();
+    const content = readFile(nombre);
+    if (!content) { print('✗ no encontrado', 'error'); return; }
+    // Detectar automáticamente qué tipo de PEM hay dentro
+    const tipo = detectarTipoPEM(content);
+    if (!tipo) { print('✗ no se encontró ningún PEM reconocido en el archivo', 'error'); return; }
+    const pem = extraerPEM(content, tipo);
+    if (!pem) { print('✗ error extrayendo PEM', 'error'); return; }
+    decodificarPEM(pem);
+
+  } else if (op === '3') {
+    print('1 → RSA PUBLIC KEY    (n, e)', 'muted');
+    print('2 → RSA PRIVATE KEY   (n, e, d, p, q)', 'muted');
+    print('3 → RSA CIPHER        (nums, n, e [, d], modo)', 'muted');
+    print('4 → RSA SIGN          (firma, n, e)', 'muted');
     const subop = (await askInput('')).trim();
     try {
       if (subop === '1') {
@@ -1511,19 +1613,18 @@ async function menuPEMUniversal() {
         const q = BigInt((await askInput('q:')).trim());
         printBlank(); printPEM(genPrivKeyPEM(n, e, d, p, q));
       } else if (subop === '3') {
-        const en = (await askInput('números cifrados:')).trim();
+        const en = (await askInput('números cifrados (espacios):')).trim();
         const nums = en.split(/\s+/).map(s => BigInt(s));
-        printBlank(); printPEM(numsToPEM(nums));
+        const n = BigInt((await askInput('n:')).trim()); const e = BigInt((await askInput('e:')).trim());
+        print('¿con qué se cifró? 1=e  2=d', 'muted');
+        const modoStr = (await askInput('')).trim();
+        const modo = modoStr === '2' ? 'd' : 'e';
+        const seedCipher = (await askInput('seed (vacío = ninguna):')).trim();
+        printBlank(); printPEM(genCipherPEM(nums, n, e, null, modo, seedCipher));
       } else if (subop === '4') {
         const f = BigInt((await askInput('firma:')).trim());
-        printBlank(); printPEM(genSignPEM(f));
-      } else if (subop === '5') {
         const n = BigInt((await askInput('n:')).trim()); const e = BigInt((await askInput('e:')).trim());
-        printBlank(); printPEM(genPublicKeysMPI(n, e));
-      } else if (subop === '6') {
-        const f = BigInt((await askInput('firma:')).trim());
-        const n = BigInt((await askInput('n:')).trim()); const e = BigInt((await askInput('e:')).trim());
-        printBlank(); printPEM(genSignAndPubKeysPEM(f, n, e));
+        printBlank(); printPEM(genSignPEM(f, n, e));
       } else print('inválido', 'error');
     } catch(ex) { print(`✗ error: ${ex}`, 'error'); }
   }
