@@ -762,19 +762,24 @@ function parseSignPEM(pem) {
 }
 
 // RSA CIPHER: 1 byte modo (0=e,1=d) + MPI(n) + MPI(e) [+ MPI(d) si modo=1] + raw_mensaje
-function genCipherPEM(nums, n, e, d_val, modoCifrado, seed) {
-  // Formato: 1B(modo) + MPI(n) + MPI(e) [+MPI(d)] + 2B(seedLen) + seedBytes + msg_raw
-  // modo: 0 = cifrado con e, 1 = cifrado con d
+function genCipherPEM(nums, n, e, d_val, modoCifrado, seed, incluirClaves, incluirSeed) {
+  // Formato: 1B(modo) + 1B(tieneClaves) + [MPI(n)+MPI(e)] + 1B(tieneSeed) + [2B(len)+seedBytes] + msg_raw
+  // d nunca se incluye.
   const modo = modoCifrado === 'd' ? 1 : 0;
   const modoByte = new Uint8Array([modo]);
-  // Solo n y e — d nunca se incluye (si se cifró con d, se descifra con e que es pública)
-  let clavesPart = concat([encodeMPI(n), encodeMPI(e)]);
-  // seed como UTF-8 con prefijo 2B de longitud
-  const seedStr = seed || '';
-  const seedBytes = new TextEncoder().encode(seedStr);
-  const seedLen = new Uint8Array(2);
-  new DataView(seedLen.buffer).setUint16(0, seedBytes.length, false);
-  const seedPart = concat([seedLen, seedBytes]);
+  const tieneClaves = incluirClaves ? 1 : 0;
+  const tieneClavesByte = new Uint8Array([tieneClaves]);
+  let clavesPart = new Uint8Array(0);
+  if (tieneClaves) clavesPart = concat([encodeMPI(n), encodeMPI(e)]);
+  const tieneSeed = (incluirSeed && seed) ? 1 : 0;
+  const tieneSeedByte = new Uint8Array([tieneSeed]);
+  let seedPart = new Uint8Array(0);
+  if (tieneSeed) {
+    const seedBytes = new TextEncoder().encode(seed);
+    const seedLen = new Uint8Array(2);
+    new DataView(seedLen.buffer).setUint16(0, seedBytes.length, false);
+    seedPart = concat([seedLen, seedBytes]);
+  }
   // mensaje raw
   const parts = [];
   for (const num of nums) {
@@ -787,20 +792,27 @@ function genCipherPEM(nums, n, e, d_val, modoCifrado, seed) {
     parts.push(sign, lenBytes, nb);
   }
   const msgPart = concat(parts);
-  return wrapPEM('RSA CIPHER', concat([modoByte, clavesPart, seedPart, msgPart]));
+  return wrapPEM('RSA CIPHER', concat([modoByte, tieneClavesByte, clavesPart, tieneSeedByte, seedPart, msgPart]));
 }
 
 function parseCipherPEM(pem) {
   const data = stripPEM(pem);
   let off = 0;
-  const modo = data[off++]; // 0=e, 1=d
-  const nR = decodeMPI(data, off); off = nR.next;
-  const eR = decodeMPI(data, off); off = eR.next;
-  // d nunca se incluye en el PEM
+  const modo = data[off++];         // 0=e, 1=d
+  const tieneClaves = data[off++];  // 0=sin claves, 1=con claves
+  let n = null, e = null;
+  if (tieneClaves) {
+    const nR = decodeMPI(data, off); off = nR.next; n = nR.value;
+    const eR = decodeMPI(data, off); off = eR.next; e = eR.value;
+  }
   // seed
-  const seedLen = new DataView(data.buffer, data.byteOffset + off, 2).getUint16(0, false); off += 2;
-  const seedBytes = data.slice(off, off + seedLen); off += seedLen;
-  const seed = new TextDecoder().decode(seedBytes);
+  const tieneSeed = data[off++];
+  let seed = '';
+  if (tieneSeed) {
+    const seedLen = new DataView(data.buffer, data.byteOffset + off, 2).getUint16(0, false); off += 2;
+    const seedBytes = data.slice(off, off + seedLen); off += seedLen;
+    seed = new TextDecoder().decode(seedBytes);
+  }
   // parse nums
   const nums = [];
   while (off < data.length) {
@@ -810,7 +822,7 @@ function parseCipherPEM(pem) {
     let val = 0n; for (const b of nb) val = (val << 8n) | BigInt(b);
     nums.push(sign === 1 ? -val : val);
   }
-  return { n: nR.value, e: eR.value, modo: modo === 1 ? 'd' : 'e', seed, nums };
+  return { n, e, modo: modo === 1 ? 'd' : 'e', seed, nums };
 }
 
 // Detectar tipo de PEM por etiqueta
@@ -1306,7 +1318,10 @@ async function generarClaves() {
   print('✓ clave_privada.txt', 'success');
 
   if (msgOrig !== null) {
-    const pemCipher = genCipherPEM(cifradosMsg, n, e, null, modoCifrado, seedUsada);
+    const inclClavesGen = (await askInput('¿incluir claves públicas (n, e) en el PEM? (y/n):')).trim().toLowerCase();
+    const inclSeedGen = seedUsada ? (await askInput('¿incluir seed en el PEM? (y/n):')).trim().toLowerCase() : '';
+    const pemCipher = genCipherPEM(cifradosMsg, n, e, null, modoCifrado, seedUsada,
+      ['y','si','s'].includes(inclClavesGen), ['y','si','s'].includes(inclSeedGen));
     writeFile('mensaje_cifrado.txt', pemCipher);
     printBlank();
     printPEM(pemCipher);
@@ -1359,7 +1374,10 @@ async function cifrarDesdeTxt() {
     if (v === 0) return 0n;
     return modPow(BigInt(v), exp, n);
   });
-  const pemCipher = genCipherPEM(cifrados, n, e, null, modoCifrado, seedUsada);
+  const inclClavesCif = (await askInput('¿incluir claves públicas (n, e) en el PEM? (y/n):')).trim().toLowerCase();
+  const inclSeedCif = seedUsada ? (await askInput('¿incluir seed en el PEM? (y/n):')).trim().toLowerCase() : '';
+  const pemCipher = genCipherPEM(cifrados, n, e, null, modoCifrado, seedUsada,
+    ['y','si','s'].includes(inclClavesCif), ['y','si','s'].includes(inclSeedCif));
 
   printBlank();
   printPEM(pemCipher);
@@ -1384,10 +1402,39 @@ async function descifrarDesdeTxt() {
 
   if (parsed.tipo === 'RSA CIPHER') {
     print(`✓ RSA CIPHER detectado (cifrado con ${parsed.modo})`, 'success');
-    print(`  n = ${parsed.n}`, 'muted');
-    print(`  e = ${parsed.e}`, 'muted');
     if (parsed.seed) print(`  seed: ${parsed.seed}`, 'muted');
-    const { n, e, modo, nums } = parsed;
+    const { modo, nums } = parsed;
+    let { n, e } = parsed;
+    // Si no hay claves en el PEM, pedirlas
+    if (n === null) {
+      print('el PEM no incluye claves públicas', 'info');
+      print('1 → introducir n y e manualmente', 'muted');
+      print('2 → pegar RSA PUBLIC KEY PEM', 'muted');
+      print('3 → cargar desde archivo', 'muted');
+      const opC = (await askInput('')).trim();
+      if (opC === '2') {
+        const pem2 = await leerPEM();
+        try { const p2 = parsePubKeyPEM(pem2); n = p2.n; e = p2.e; print('✓ claves leídas', 'success'); }
+        catch(ex) { print(`✗ ${ex}`, 'error'); return; }
+      } else if (opC === '3') {
+        const nom = (await askInput('nombre del archivo:')).trim();
+        const fc = readFile(nom);
+        if (!fc) { print('✗ no encontrado', 'error'); return; }
+        const tipo2 = detectarTipoPEM(fc);
+        try {
+          if (tipo2 === 'RSA PUBLIC KEY') { const p2 = parsePubKeyPEM(extraerPEM(fc, 'RSA PUBLIC KEY')); n = p2.n; e = p2.e; }
+          else if (tipo2 === 'RSA PRIVATE KEY') { const p2 = parsePrivKeyPEM(extraerPEM(fc, 'RSA PRIVATE KEY')); n = p2.n; e = p2.e; }
+          else { print('✗ no se encontró clave en el archivo', 'error'); return; }
+          print('✓ claves leídas del archivo', 'success');
+        } catch(ex) { print(`✗ ${ex}`, 'error'); return; }
+      } else {
+        n = BigInt((await askInput('n:')).trim());
+        e = BigInt((await askInput('e:')).trim());
+      }
+    } else {
+      print(`  n = ${n}`, 'muted');
+      print(`  e = ${e}`, 'muted');
+    }
     // Determinar exponente de descifrado
     let exp;
     if (modo === 'e') {
@@ -1400,10 +1447,11 @@ async function descifrarDesdeTxt() {
     // Seed: usar la del PEM si existe, preguntar si no
     let seedUsada;
     if (parsed.seed) {
-      print(`✓ seed "${parsed.seed}" leída del PEM`, 'success');
+      print(`✓ seed "${parsed.seed}" incluida en el PEM`, 'success');
       const usar = (await askInput('¿usar esta seed? (y/n):')).trim().toLowerCase();
       seedUsada = ['y','si','s',''].includes(usar) ? parsed.seed : await pedirSeed();
     } else {
+      print('el PEM no incluye seed', 'muted');
       seedUsada = await pedirSeed();
     }
     if (seedUsada) applyAbc(genAbcWithSeed(seedUsada));
@@ -1575,8 +1623,10 @@ function decodificarPEM(pem) {
     } else if (label === 'RSA CIPHER') {
       const { n, e, modo, seed, nums } = parseCipherPEM(pem);
       print(`cifrado con: ${modo}`, 'label');
-      print(`n = ${n}`, 'label'); print(`e = ${e}`, 'label');
-      print(`seed: ${seed || '(normal)'}`, 'label');
+      if (n !== null) { print(`n = ${n}`, 'label'); print(`e = ${e}`, 'label'); }
+      else print('claves públicas: no incluidas', 'muted');
+      if (seed) print(`seed: ${seed}`, 'label');
+      else print('seed: no incluida', 'muted');
       print(`${nums.length} valores cifrados:`, 'muted');
       print(nums.map(x=>x.toString()).join(' '), 'success');
     } else if (label === 'RSA SIGN') {
@@ -1629,12 +1679,48 @@ async function menuPEMUniversal() {
       } else if (subop === '3') {
         const en = (await askInput('números cifrados (espacios):')).trim();
         const nums = en.split(/\s+/).map(s => BigInt(s));
-        const n = BigInt((await askInput('n:')).trim()); const e = BigInt((await askInput('e:')).trim());
         print('¿con qué se cifró? 1=e  2=d', 'muted');
         const modoStr = (await askInput('')).trim();
         const modo = modoStr === '2' ? 'd' : 'e';
+        // ¿Incluir claves públicas dentro del PEM?
+        print('¿incluir claves públicas (n, e) dentro del PEM? (y/n)', 'muted');
+        const inclStr = (await askInput('')).trim().toLowerCase();
+        const incluirClaves = ['y','si','s'].includes(inclStr);
+        let n = null, e = null;
+        if (incluirClaves) {
+          print('claves públicas (n, e):', 'label');
+          print('1 → introducir n y e manualmente', 'muted');
+          print('2 → pegar RSA PUBLIC KEY PEM', 'muted');
+          print('3 → cargar desde archivo', 'muted');
+          const clavesOp = (await askInput('')).trim();
+          if (clavesOp === '2') {
+            const pem = await leerPEM();
+            try { const parsed = parsePubKeyPEM(pem); n = parsed.n; e = parsed.e; print('✓ n y e leídos del PEM', 'success'); }
+            catch(ex) { print(`✗ error: ${ex}`, 'error'); return; }
+          } else if (clavesOp === '3') {
+            const nombre = (await askInput('nombre del archivo:')).trim();
+            const fc = readFile(nombre);
+            if (!fc) { print('✗ no encontrado', 'error'); return; }
+            const tipo = detectarTipoPEM(fc);
+            if (tipo === 'RSA PUBLIC KEY') {
+              try { const parsed = parsePubKeyPEM(extraerPEM(fc, 'RSA PUBLIC KEY')); n = parsed.n; e = parsed.e; print('✓ n y e leídos del archivo', 'success'); }
+              catch(ex) { print(`✗ error: ${ex}`, 'error'); return; }
+            } else if (tipo === 'RSA PRIVATE KEY') {
+              try { const parsed = parsePrivKeyPEM(extraerPEM(fc, 'RSA PRIVATE KEY')); n = parsed.n; e = parsed.e; print('✓ n y e leídos de la clave privada', 'success'); }
+              catch(ex) { print(`✗ error: ${ex}`, 'error'); return; }
+            } else { print('✗ no se encontró clave en el archivo', 'error'); return; }
+          } else {
+            n = BigInt((await askInput('n:')).trim());
+            e = BigInt((await askInput('e:')).trim());
+          }
+        }
         const seedCipher = (await askInput('seed (vacío = ninguna):')).trim();
-        printBlank(); printPEM(genCipherPEM(nums, n, e, null, modo, seedCipher));
+        let inclSeedUni = false;
+        if (seedCipher) {
+          const inclSeedStr = (await askInput('¿incluir seed en el PEM? (y/n):')).trim().toLowerCase();
+          inclSeedUni = ['y','si','s'].includes(inclSeedStr);
+        }
+        printBlank(); printPEM(genCipherPEM(nums, n, e, null, modo, seedCipher, incluirClaves, inclSeedUni));
       } else if (subop === '4') {
         const f = BigInt((await askInput('firma:')).trim());
         const n = BigInt((await askInput('n:')).trim()); const e = BigInt((await askInput('e:')).trim());
