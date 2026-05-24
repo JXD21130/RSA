@@ -1330,8 +1330,16 @@ async function obtenerClavesPublicas() {
 
 async function elegirModoRSA() {
   print('', 'output-text');
-  print('1 → usar e', 'muted');
-  print('2 → usar d', 'muted');
+  print('1 → cifrar con e (clave pública)', 'muted');
+  print('2 → cifrar con d (clave privada)', 'muted');
+  const op = (await askInput('')).trim();
+  return op === '2' ? 'd' : 'e';
+}
+
+async function elegirModoDescifrar() {
+  print('', 'output-text');
+  print('1 → descifrar con e (clave pública)', 'muted');
+  print('2 → descifrar con d (clave privada)', 'muted');
   const op = (await askInput('')).trim();
   return op === '2' ? 'd' : 'e';
 }
