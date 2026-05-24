@@ -1312,7 +1312,16 @@ async function obtenerClavesPublicas() {
     const phi = (p - 1n) * (q - 1n);
     print(`n = ${n}`, 'label');
     print(`φ(n) = ${phi}`, 'label');
-    e = BigInt((await askInput('e:')).trim());
+    const eStr = (await askInput('e (Enter = calcular automáticamente):')).trim();
+    if (eStr === '') {
+      // Buscar e válido: 65537 si es coprimo, si no el siguiente impar coprimo
+      e = 65537n;
+      if (gcd(e, phi) !== 1n) { e = 3n; while (gcd(e, phi) !== 1n) e += 2n; }
+      print(`e = ${e} (calculado automáticamente)`, 'label');
+    } else {
+      e = BigInt(eStr);
+      if (gcd(e, phi) !== 1n) { print('✗ e no es coprimo con φ(n), elige otro', 'error'); throw new Error('e inválido'); }
+    }
     d = modInverse(e, phi);
     print(`d = ${d}`, 'label');
   }
