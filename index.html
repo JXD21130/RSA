@@ -1252,9 +1252,9 @@ async function descifrarNumero() {
   const c = BigInt(numStr.trim());
   const nStr = await askInput('n:');
   const n = BigInt(nStr.trim());
-  const modo = await elegirModoRSA();
+  const modo = await elegirModoDescifrar();
   let exp;
-  if (modo === 'e') { const dStr = await askInput('d:'); exp = BigInt(dStr.trim()); }
+  if (modo === 'd') { const dStr = await askInput('d:'); exp = BigInt(dStr.trim()); }
   else { const eStr = await askInput('e:'); exp = BigInt(eStr.trim()); }
   printBlank(); print(modPow(c, exp, n).toString(), 'success'); printBlank();
 }
@@ -1287,9 +1287,9 @@ async function descifrarTexto() {
   const cifrados = entrada.trim().split(/\s+/).map(s => BigInt(s));
   const nStr = await askInput('n:');
   const n = BigInt(nStr.trim());
-  const modo = await elegirModoRSA();
+  const modo = await elegirModoDescifrar();
   let exp;
-  if (modo === 'e') exp = BigInt((await askInput('d:')).trim());
+  if (modo === 'd') exp = BigInt((await askInput('d:')).trim());
   else exp = BigInt((await askInput('e:')).trim());
   const descifrados = cifrados.map(c => {
     if (c < 0n) return MARCADOR_DIGITO;
@@ -1456,27 +1456,34 @@ async function cifrarDesdeTxt() {
   if (!nombre) { fileNames.forEach(f => print(`  ${f}`, 'muted')); return; }
   const content = readFile(nombre);
   if (content === null) { print(`✗ archivo no encontrado: ${nombre}`, 'error'); return; }
-  const claves = detectKeysInTxt(content);
-  printBlank();
-  if (Object.keys(claves).length) {
-    print('claves detectadas:', 'label');
-    for (const [k, v] of Object.entries(claves)) {
-      if (k !== 'pem_publica' && k !== 'pem_privada') print(`  ${k} = ${v}`, 'muted');
-    }
+  const tipo = detectarTipoPEM(content);
+  let n = null, e = null, d = null;
+  if (tipo === 'RSA PUBLIC KEY') {
+    try { const p = parsePubKeyPEM(extraerPEM(content, 'RSA PUBLIC KEY')); n = p.n; e = p.e; print(`✓ clave pública detectada`, 'success'); } catch(ex){}
+  } else if (tipo === 'RSA PRIVATE KEY') {
+    try { const p = parsePrivKeyPEM(extraerPEM(content, 'RSA PRIVATE KEY')); n = p.n; e = p.e; d = p.d; print(`✓ clave privada detectada`, 'success'); } catch(ex){}
   }
+  if (n !== null) {
+    const usar = (await askInput('¿usar claves del archivo? (y/n):')).trim().toLowerCase();
+    if (!['y','si','s',''].includes(usar)) { n = null; e = null; d = null; }
+  }
+
   const mensaje = (await askInput('mensaje a cifrar:')).trim();
   if (!mensaje) { print('✗ mensaje vacío', 'error'); return; }
 
-  let n, e, d = null, p = null, q = null;
-  if (claves.n && claves.e) {
-    const usar = (await askInput(`¿usar n y e del archivo? (y/n):`)).trim().toLowerCase();
-    if (['y','si','s',''].includes(usar)) { n = claves.n; e = claves.e; d = claves.d || null; p = claves.p || null; q = claves.q || null; }
-    else { ({ n, e, d, p, q } = await obtenerClavesPublicas()); }
-  } else { ({ n, e, d, p, q } = await obtenerClavesPublicas()); }
+  if (n === null) {
+    const r = await obtenerClavesPublicas();
+    n = r.n; e = r.e; d = r.d;
+  }
 
   const modo = await elegirModoRSA();
-  let exp = modo === 'e' ? e : (d ?? BigInt((await askInput('d:')).trim()));
-  const modoCifrado = modo;
+  let exp, modoCifrado = modo;
+  if (modo === 'e') {
+    exp = e;
+  } else {
+    if (d !== null) { print('✓ usando d del archivo', 'success'); exp = d; }
+    else exp = BigInt((await askInput('d:')).trim());
+  }
 
   const seedUsada = await pedirSeed();
   if (seedUsada) { applyAbc(genAbcWithSeed(seedUsada)); }
@@ -1518,43 +1525,72 @@ async function descifrarDesdeTxt() {
     if (parsed.seed) print(`  seed: ${parsed.seed}`, 'muted');
     const { modo, nums } = parsed;
     let { n, e } = parsed;
-    // Si no hay claves en el PEM, pedirlas
-    if (n === null) {
-      print('el PEM no incluye claves públicas', 'info');
-      print('1 → introducir n y e manualmente', 'muted');
-      print('2 → pegar RSA PUBLIC KEY PEM', 'muted');
-      print('3 → cargar desde archivo', 'muted');
-      const opC = (await askInput('')).trim();
-      if (opC === '2') {
-        const pem2 = await leerPEM();
-        try { const p2 = parsePubKeyPEM(pem2); n = p2.n; e = p2.e; print('✓ claves leídas', 'success'); }
-        catch(ex) { print(`✗ ${ex}`, 'error'); return; }
-      } else if (opC === '3') {
-        const nom = (await askInput('nombre del archivo:')).trim();
-        const fc = readFile(nom);
-        if (!fc) { print('✗ no encontrado', 'error'); return; }
-        const tipo2 = detectarTipoPEM(fc);
-        try {
-          if (tipo2 === 'RSA PUBLIC KEY') { const p2 = parsePubKeyPEM(extraerPEM(fc, 'RSA PUBLIC KEY')); n = p2.n; e = p2.e; }
-          else if (tipo2 === 'RSA PRIVATE KEY') { const p2 = parsePrivKeyPEM(extraerPEM(fc, 'RSA PRIVATE KEY')); n = p2.n; e = p2.e; }
-          else { print('✗ no se encontró clave en el archivo', 'error'); return; }
-          print('✓ claves leídas del archivo', 'success');
-        } catch(ex) { print(`✗ ${ex}`, 'error'); return; }
-      } else {
-        n = BigInt((await askInput('n:')).trim());
-        e = BigInt((await askInput('e:')).trim());
-      }
-    } else {
-      print(`  n = ${n}`, 'muted');
-      print(`  e = ${e}`, 'muted');
-    }
     // Determinar exponente de descifrado
     let exp;
     if (modo === 'e') {
       print('cifrado con e → necesito d para descifrar', 'info');
-      exp = BigInt((await askInput('d:')).trim());
+      print('1 → introducir d manualmente', 'muted');
+      print('2 → pegar RSA PRIVATE KEY PEM', 'muted');
+      print('3 → cargar desde archivo', 'muted');
+      const opD = (await askInput('')).trim();
+      if (opD === '2') {
+        const pemPriv = await leerPEM();
+        try {
+          const p2 = parsePrivKeyPEM(pemPriv);
+          exp = p2.d;
+          if (n === null) { n = p2.n; e = p2.e; }
+          print('✓ d leído del PEM', 'success');
+        } catch(ex) { print(`✗ ${ex}`, 'error'); return; }
+      } else if (opD === '3') {
+        const nom = (await askInput('nombre del archivo:')).trim();
+        const fc = readFile(nom);
+        if (!fc) { print('✗ no encontrado', 'error'); return; }
+        const tipo2 = detectarTipoPEM(fc);
+        if (tipo2 !== 'RSA PRIVATE KEY') { print('✗ no se encontró RSA PRIVATE KEY en el archivo', 'error'); return; }
+        try {
+          const p2 = parsePrivKeyPEM(extraerPEM(fc, 'RSA PRIVATE KEY'));
+          exp = p2.d;
+          if (n === null) { n = p2.n; e = p2.e; }
+          print('✓ d leído del archivo', 'success');
+        } catch(ex) { print(`✗ ${ex}`, 'error'); return; }
+      } else {
+        exp = BigInt((await askInput('d:')).trim());
+        if (n === null) {
+          n = BigInt((await askInput('n:')).trim());
+          e = BigInt((await askInput('e:')).trim());
+        }
+      }
     } else {
       print('cifrado con d → descifrar con e (clave pública)', 'info');
+      if (n === null) {
+        print('el PEM no incluye claves públicas', 'info');
+        print('1 → introducir n y e manualmente', 'muted');
+        print('2 → pegar RSA PUBLIC KEY PEM', 'muted');
+        print('3 → cargar desde archivo', 'muted');
+        const opC = (await askInput('')).trim();
+        if (opC === '2') {
+          const pem2 = await leerPEM();
+          try { const p2 = parsePubKeyPEM(pem2); n = p2.n; e = p2.e; print('✓ claves leídas', 'success'); }
+          catch(ex) { print(`✗ ${ex}`, 'error'); return; }
+        } else if (opC === '3') {
+          const nom = (await askInput('nombre del archivo:')).trim();
+          const fc = readFile(nom);
+          if (!fc) { print('✗ no encontrado', 'error'); return; }
+          const tipo2 = detectarTipoPEM(fc);
+          try {
+            if (tipo2 === 'RSA PUBLIC KEY') { const p2 = parsePubKeyPEM(extraerPEM(fc, 'RSA PUBLIC KEY')); n = p2.n; e = p2.e; }
+            else if (tipo2 === 'RSA PRIVATE KEY') { const p2 = parsePrivKeyPEM(extraerPEM(fc, 'RSA PRIVATE KEY')); n = p2.n; e = p2.e; }
+            else { print('✗ no se encontró clave en el archivo', 'error'); return; }
+            print('✓ claves leídas del archivo', 'success');
+          } catch(ex) { print(`✗ ${ex}`, 'error'); return; }
+        } else {
+          n = BigInt((await askInput('n:')).trim());
+          e = BigInt((await askInput('e:')).trim());
+        }
+      } else {
+        print(`  n = ${n}`, 'muted');
+        print(`  e = ${e}`, 'muted');
+      }
       exp = e;
     }
     // Seed: usar la del PEM si existe, preguntar si no
