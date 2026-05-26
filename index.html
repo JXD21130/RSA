@@ -471,6 +471,7 @@
         <button class="file-btn" onclick="newFile()">nuevo</button>
         <button class="file-btn" onclick="document.getElementById('upload-input').click()">subir</button>
         <button class="file-btn" onclick="downloadCurrentFile()">bajar</button>
+        <button class="file-btn" onclick="clearAllFiles()" style="color:var(--red);border-color:var(--red)">borrar</button>
       </div>
     </div>
 
@@ -976,6 +977,10 @@ let files = {}; // { name: content }
 let activeFile = null;
 let editorDirty = false;
 
+const LS_KEY = 'ciphr_rsa_files';
+function saveFilesToLS() { try { localStorage.setItem(LS_KEY, JSON.stringify(files)); } catch(e) {} }
+function loadFilesFromLS() { try { const r=localStorage.getItem(LS_KEY); if(r) files=JSON.parse(r); } catch(e) { files={}; } }
+
 function renderFileList() {
   const list = document.getElementById('file-list');
   list.innerHTML = '';
@@ -1012,6 +1017,7 @@ function saveCurrentFile() {
   if (!activeFile) return;
   files[activeFile] = document.getElementById('editor-area').value;
   editorDirty = false;
+  saveFilesToLS();
   print(`✓ guardado: ${activeFile}`, 'success');
 }
 
@@ -1020,6 +1026,7 @@ function newFile() {
   if (!name) return;
   const fname = name.endsWith('.txt') ? name : name + '.txt';
   files[fname] = '';
+  saveFilesToLS();
   renderFileList();
   openFile(fname);
 }
@@ -1028,6 +1035,7 @@ function deleteFile(name, e) {
   e.stopPropagation();
   if (!confirm(`¿Eliminar ${name}?`)) return;
   delete files[name];
+  saveFilesToLS();
   if (activeFile === name) {
     activeFile = null;
     document.getElementById('editor-area').style.display = 'none';
@@ -1060,6 +1068,7 @@ function handleUpload(e) {
     const reader = new FileReader();
     reader.onload = (ev) => {
       files[f.name] = ev.target.result;
+      saveFilesToLS();
       renderFileList();
       print(`✓ importado: ${f.name}`, 'success');
     };
@@ -1068,8 +1077,19 @@ function handleUpload(e) {
   e.target.value = '';
 }
 
+function clearAllFiles() {
+  if (!confirm('¿Borrar todos los archivos guardados?')) return;
+  files = {}; activeFile = null; editorDirty = false;
+  localStorage.removeItem(LS_KEY);
+  document.getElementById('editor-area').style.display = 'none';
+  document.getElementById('editor-placeholder').style.display = 'flex';
+  document.getElementById('editor-filename').textContent = 'sin archivo';
+  renderFileList();
+  print('✓ archivos borrados', 'success');
+}
 function writeFile(name, content) {
   files[name] = content;
+  saveFilesToLS();
   renderFileList();
   if (activeFile === name) document.getElementById('editor-area').value = content;
 }
@@ -2040,7 +2060,11 @@ document.getElementById('terminal-panel').addEventListener('click', e => {
 });
 
 cmdInput.focus();
+loadFilesFromLS();
 renderFileList();
+if (Object.keys(files).length > 0) {
+  print(`✓ ${Object.keys(files).length} archivo(s) restaurado(s)`, 'success');
+}
 runProgram();
 </script>
 </body>
